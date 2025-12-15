@@ -11,7 +11,7 @@ class FordScraper {
         try {
             console.log('Launching Ford scraper with Firefox...');
             this.browser = await firefox.launch({
-                headless: true, // Browser runs in background
+                headless: false, // Browser runs in background
                 args: [
                     '--no-sandbox', 
                     '--disable-setuid-sandbox'
@@ -133,8 +133,34 @@ class FordScraper {
             console.log('Page loaded, waiting for elements...');
             await this.page.waitForTimeout(2000);
 
-            // Find VIN input field
-            const vinInput = await this.page.$('#vin-field-vin-selector');
+            // Find VIN input field using data-testid (most reliable selector)
+            console.log('Waiting for VIN input field...');
+            const vinInput = await this.page.waitForSelector('[data-testid="vin-search-text-field"]', {
+                state: 'visible',
+                timeout: 10000
+            }).catch(async () => {
+                // Fallback: try alternative selectors
+                console.log('Primary selector failed, trying fallback selectors...');
+                const fallbackSelectors = [
+                    'input[data-testid*="vin"]',
+                    'input[id*="vin"]',
+                    'input[aria-labelledby*="vin"]'
+                ];
+                
+                for (const selector of fallbackSelectors) {
+                    try {
+                        const element = await this.page.$(selector);
+                        if (element && await element.isVisible()) {
+                            console.log(`Found VIN input using fallback: ${selector}`);
+                            return element;
+                        }
+                    } catch (e) {
+                        continue;
+                    }
+                }
+                return null;
+            });
+
             if (!vinInput) {
                 throw new Error('Could not find VIN input field');
             }
@@ -147,10 +173,34 @@ class FordScraper {
             await vinInput.fill(vinNumber);
             console.log(`VIN entered: ${vinNumber}`);
 
+            // Wait a moment for the button to become enabled (it's disabled until VIN is entered)
+            await this.page.waitForTimeout(500);
+
             // Find and click the Search button
-            const submitButton = await this.page.$('[data-test-id="vin-submit-button"]');
+            // The button has aria-label="Search" and is initially disabled
+            const submitButton = await this.page.waitForSelector('button[aria-label="Search"]:not([disabled])', {
+                state: 'visible',
+                timeout: 5000
+            }).catch(async () => {
+                // Fallback: try to find any enabled search button
+                const buttons = await this.page.$$('button');
+                for (const button of buttons) {
+                    try {
+                        const ariaLabel = await button.getAttribute('aria-label');
+                        const disabled = await button.getAttribute('disabled');
+                        const text = await button.textContent();
+                        if ((ariaLabel === 'Search' || text?.includes('Search')) && !disabled) {
+                            return button;
+                        }
+                    } catch (e) {
+                        continue;
+                    }
+                }
+                return null;
+            });
+
             if (!submitButton) {
-                throw new Error('Could not find Search button');
+                throw new Error('Could not find Search button or button is still disabled');
             }
 
             await submitButton.click();
