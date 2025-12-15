@@ -35,6 +35,35 @@ class DocSearchScraper {
         }
     }
 
+    async checkAccessDenied() {
+        try {
+            if (!this.page) {
+                return false;
+            }
+
+            // Check for "Access Denied" heading
+            const accessDeniedHeading = await this.page.$('h1:has-text("Access Denied")');
+            if (accessDeniedHeading && await accessDeniedHeading.isVisible()) {
+                return true;
+            }
+
+            // Check page content for "Access Denied" text
+            const pageContent = await this.page.textContent('body');
+            if (pageContent && pageContent.includes('Access Denied')) {
+                // Check if it's in an h1 tag specifically
+                const h1Content = await this.page.textContent('h1');
+                if (h1Content && h1Content.trim() === 'Access Denied') {
+                    return true;
+                }
+            }
+
+            return false;
+        } catch (error) {
+            // If we can't check, assume no access denied
+            return false;
+        }
+    }
+
     async checkIfAlreadySignedIn() {
         try {
             if (!this.page) {
@@ -51,6 +80,13 @@ class DocSearchScraper {
 
             // Wait a moment for any redirects or dynamic content
             await this.page.waitForTimeout(3000);
+            
+            // Check for Access Denied
+            const hasAccessDenied = await this.checkAccessDenied();
+            if (hasAccessDenied) {
+                console.log('❌ Access Denied detected - You do not have permission to access DocSearch');
+                return false;
+            }
 
             // Check for signs that user is already signed in
             const signedInIndicators = [
@@ -147,6 +183,16 @@ class DocSearchScraper {
                 waitUntil: 'networkidle',
                 timeout: 30000 
             });
+            
+            // Wait a moment for page to load
+            await this.page.waitForTimeout(2000);
+            
+            // Check for Access Denied
+            const hasAccessDenied = await this.checkAccessDenied();
+            if (hasAccessDenied) {
+                console.log('❌ Access Denied detected - You do not have permission to access DocSearch');
+                return false;
+            }
 
             console.log('📝 Browser opened. Please sign in manually and navigate to the homepage.');
             console.log('⏳ Waiting for you to complete sign-in... (5 minute timeout)');
@@ -161,10 +207,28 @@ class DocSearchScraper {
                 // Wait a bit more to ensure user is ready
                 await this.page.waitForTimeout(2000);
                 
+                // Check again for Access Denied after sign-in
+                const hasAccessDenied = await this.checkAccessDenied();
+                if (hasAccessDenied) {
+                    console.log('❌ Access Denied detected after sign-in - You do not have permission to access DocSearch');
+                    this.isAuthenticated = false;
+                    return false;
+                }
+                
                 this.isAuthenticated = true;
                 return true;
             } catch (waitError) {
-                console.log('⏱️ Timeout waiting for homepage. Assuming user is ready to proceed...');
+                console.log('⏱️ Timeout waiting for homepage. Checking for access...');
+                
+                // Check for Access Denied even on timeout
+                const hasAccessDenied = await this.checkAccessDenied();
+                if (hasAccessDenied) {
+                    console.log('❌ Access Denied detected - You do not have permission to access DocSearch');
+                    this.isAuthenticated = false;
+                    return false;
+                }
+                
+                console.log('Assuming user is ready to proceed...');
                 this.isAuthenticated = true;
                 return true;
             }
@@ -193,6 +257,22 @@ class DocSearchScraper {
             
             // Wait for page to fully load
             await this.page.waitForTimeout(3000);
+            
+            // Check for Access Denied
+            const hasAccessDenied = await this.checkAccessDenied();
+            if (hasAccessDenied) {
+                console.log('❌ Access Denied detected - You do not have permission to access DocSearch');
+                return {
+                    success: false,
+                    recallNumber: recallNumber,
+                    error: 'You do not have permission to access DocSearch. Access Denied.',
+                    eaExists: false,
+                    eaNumber: null,
+                    searchResults: [],
+                    resultCount: 0
+                };
+            }
+            
             console.log('Successfully navigated to search form');
 
             // Step 2: Check the EA/ERA checkbox

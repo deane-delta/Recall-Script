@@ -11,7 +11,7 @@ class FordScraper {
         try {
             console.log('Launching Ford scraper with Firefox...');
             this.browser = await firefox.launch({
-                headless: false, // Browser runs in background
+                headless: true, // Browser runs in background
                 args: [
                     '--no-sandbox', 
                     '--disable-setuid-sandbox'
@@ -113,13 +113,18 @@ class FordScraper {
         }
     }
 
-    async scrapeVinRecallData(vinNumber) {
+    async scrapeVinRecallData(vinNumber, retryCount = 0) {
+        const MAX_RETRIES = 2; // Maximum number of retries after timeout
+        
         try {
             if (!this.page) {
                 throw new Error('Scraper not initialized. Call initialize() first.');
             }
 
             console.log(`\n=== STARTING FORD SCRAPING FOR VIN: ${vinNumber} ===`);
+            if (retryCount > 0) {
+                console.log(`🔄 Retry attempt ${retryCount} for VIN: ${vinNumber}`);
+            }
             console.log(`Current page URL before navigation: ${await this.page.url()}`);
             console.log(`Scraping Ford recall data for VIN: ${vinNumber}`);
 
@@ -167,14 +172,34 @@ class FordScraper {
 
             console.log('Found VIN input field');
 
-            // Enter VIN
-            await vinInput.click();
-            await vinInput.fill(''); // Clear field
-            await vinInput.fill(vinNumber);
+            // Use locator to avoid stale element references
+            const vinInputLocator = this.page.locator('[data-testid="vin-search-text-field"]');
+            
+            // Clear the field first by selecting all and deleting
+            await vinInputLocator.click({ clickCount: 3 });
+            await this.page.keyboard.press('Backspace');
+            await this.page.waitForTimeout(200);
+
+            // Type VIN character by character (instead of fill/copy-paste)
+            console.log(`Typing VIN: ${vinNumber}`);
+            await vinInputLocator.type(vinNumber, { delay: 50 }); // Small delay between characters
             console.log(`VIN entered: ${vinNumber}`);
 
-            // Wait a moment for the button to become enabled (it's disabled until VIN is entered)
-            await this.page.waitForTimeout(500);
+            // Wait a moment for validation and button to become enabled
+            await this.page.waitForTimeout(1000);
+
+            // Check for VIN validation error
+            const errorElement = await this.page.$('[data-testid="vin-search-text-field-error"]');
+            if (errorElement && await errorElement.isVisible()) {
+                const errorText = await errorElement.textContent();
+                console.log(`❌ Invalid VIN detected: ${errorText}`);
+                return {
+                    vin: vinNumber,
+                    success: false,
+                    error: `Invalid VIN: ${errorText?.trim() || 'Enter a valid 17-character Ford VIN'}`,
+                    scrapedAt: new Date().toISOString()
+                };
+            }
 
             // Find and click the Search button
             // The button has aria-label="Search" and is initially disabled
@@ -200,14 +225,40 @@ class FordScraper {
             });
 
             if (!submitButton) {
+                // Check again for error in case button didn't enable due to invalid VIN
+                const errorElement = await this.page.$('[data-testid="vin-search-text-field-error"]');
+                if (errorElement && await errorElement.isVisible()) {
+                    const errorText = await errorElement.textContent();
+                    console.log(`❌ Invalid VIN detected: ${errorText}`);
+                    return {
+                        vin: vinNumber,
+                        success: false,
+                        error: `Invalid VIN: ${errorText?.trim() || 'Enter a valid 17-character Ford VIN'}`,
+                        scrapedAt: new Date().toISOString()
+                    };
+                }
                 throw new Error('Could not find Search button or button is still disabled');
             }
 
             await submitButton.click();
             console.log('Search button clicked');
 
+            // Wait a moment and check for any validation errors that might appear after submission
+            await this.page.waitForTimeout(1000);
+            const errorAfterSubmit = await this.page.$('[data-testid="vin-search-text-field-error"]');
+            if (errorAfterSubmit && await errorAfterSubmit.isVisible()) {
+                const errorText = await errorAfterSubmit.textContent();
+                console.log(`❌ Invalid VIN detected after submission: ${errorText}`);
+                return {
+                    vin: vinNumber,
+                    success: false,
+                    error: `Invalid VIN: ${errorText?.trim() || 'Enter a valid 17-character Ford VIN'}`,
+                    scrapedAt: new Date().toISOString()
+                };
+            }
+
             // Wait for results to load
-            await this.page.waitForTimeout(5000);
+            await this.page.waitForTimeout(4000);
 
             // Extract recall information
             const recallData = await this.extractRecallData();
@@ -220,6 +271,54 @@ class FordScraper {
             };
 
         } catch (error) {
+            // Check if it's a timeout error and we haven't exceeded max retries
+            const isTimeoutError = error.name === 'TimeoutError' || 
+                                   error.message.includes('Timeout') || 
+                                   error.message.includes('timeout');
+            
+            if (isTimeoutError && retryCount < MAX_RETRIES) {
+                console.log(`\n⏱️  Timeout error detected for VIN ${vinNumber}. Restarting browser and retrying...`);
+                console.log(`   Retry attempt: ${retryCount + 1} of ${MAX_RETRIES}`);
+                
+                try {
+                    // Close the browser
+                    console.log('Closing browser due to timeout...');
+                    await this.close();
+                    
+                    // Wait a moment before restarting
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    
+                    // Reinitialize the browser
+                    console.log('Reinitializing browser...');
+                    const reinitialized = await this.initialize();
+                    
+                    if (!reinitialized) {
+                        console.error('❌ Failed to reinitialize browser after timeout');
+                        return {
+                            vin: vinNumber,
+                            success: false,
+                            error: 'Failed to reinitialize browser after timeout',
+                            scrapedAt: new Date().toISOString()
+                        };
+                    }
+                    
+                    console.log('✅ Browser restarted successfully. Retrying VIN scraping...');
+                    
+                    // Retry the scraping with incremented retry count
+                    return await this.scrapeVinRecallData(vinNumber, retryCount + 1);
+                    
+                } catch (retryError) {
+                    console.error(`❌ Error during browser restart/retry for VIN ${vinNumber}:`, retryError);
+                    return {
+                        vin: vinNumber,
+                        success: false,
+                        error: `Timeout and retry failed: ${retryError.message}`,
+                        scrapedAt: new Date().toISOString()
+                    };
+                }
+            }
+            
+            // If not a timeout error, or max retries exceeded, return error
             console.error(`Error scraping Ford data for VIN ${vinNumber}:`, error);
             return {
                 vin: vinNumber,
@@ -234,8 +333,8 @@ class FordScraper {
         try {
             console.log('Checking for Customer Satisfaction Programs section...');
             
-            // Look for the "Customer Satisfaction Programs" header
-            const cspHeader = await this.page.$('header.recalls-safety-heading:has-text("Customer Satisfaction Programs")');
+            // Look for the "Customer Satisfaction Programs" section header
+            const cspHeader = await this.page.$('[data-testid="button-csp-section-header"]');
             
             if (!cspHeader) {
                 console.log('No Customer Satisfaction Programs section found');
@@ -244,92 +343,76 @@ class FordScraper {
             
             console.log('Found Customer Satisfaction Programs section');
             
-            // Get the position of the CSP header and find the next section header
-            const sectionInfo = await this.page.evaluate(() => {
-                const headers = Array.from(document.querySelectorAll('header.recalls-safety-heading'));
-                const cspHeader = headers.find(h => h.textContent.includes('Customer Satisfaction Programs'));
-                if (!cspHeader) return null;
-                
-                const cspY = cspHeader.getBoundingClientRect().y;
-                const nextHeader = headers.find(h => {
-                    const hY = h.getBoundingClientRect().y;
-                    return hY > cspY && h !== cspHeader;
-                });
-                
-                return {
-                    cspY: cspY,
-                    nextHeaderY: nextHeader ? nextHeader.getBoundingClientRect().y : Infinity
-                };
-            });
-            
-            if (!sectionInfo) {
-                console.log('Could not determine CSP section boundaries');
-                return;
-            }
-            
-            // Find all buttons and filter to only those in the CSP section
-            // Re-find buttons to ensure we have fresh references (in case they were clicked during regular recall extraction)
-            const allButtons = await this.page.$$('button.recalls-info-button');
-            const freshCspButtons = [];
+            // Extract campaign numbers directly from button data-testid attributes
+            // CSP buttons have data-testid="button-{CAMPAIGN_NUMBER}" format
+            // e.g., button-22L05, button-24N08, button-25N09
+            const allButtons = await this.page.$$('button[data-testid^="button-"]');
+            const cspButtons = [];
             
             for (const button of allButtons) {
                 try {
-                    const buttonY = await button.evaluate((btn) => btn.getBoundingClientRect().y);
-                    if (buttonY > sectionInfo.cspY && buttonY < sectionInfo.nextHeaderY) {
-                        freshCspButtons.push(button);
+                    const testId = await button.getAttribute('data-testid');
+                    // Exclude the section header and recall buttons
+                    if (testId && 
+                        testId !== 'button-csp-section-header' && 
+                        testId !== 'button-safety-recalls-section-header') {
+                        const potentialCampaignNumber = testId.replace('button-', '');
+                        // Campaign number pattern: 2 digits, letter, 2 digits (e.g., 22L05, 24N08, 25N09)
+                        const campaignPattern = /^\d{2}[A-Za-z]\d{2}$/;
+                        if (campaignPattern.test(potentialCampaignNumber)) {
+                            cspButtons.push(button);
+                        }
                     }
                 } catch (e) {
                     continue;
                 }
             }
             
-            console.log(`Processing ${freshCspButtons.length} Customer Satisfaction Program button(s)`);
+            // Filter out recall buttons (they have YYV###### format, not YYL## format)
+            const recallPattern = /^\d{2}V\d{3,6}$/;
+            const filteredCspButtons = [];
             
-            for (let i = 0; i < freshCspButtons.length; i++) {
+            for (const button of cspButtons) {
+                const testId = await button.getAttribute('data-testid');
+                if (testId) {
+                    const number = testId.replace('button-', '');
+                    // If it matches recall pattern, skip it (it's a recall, not CSP)
+                    if (!recallPattern.test(number)) {
+                        filteredCspButtons.push(button);
+                    }
+                }
+            }
+            
+            console.log(`Found ${filteredCspButtons.length} Customer Satisfaction Program button(s)`);
+            
+            // Extract campaign numbers directly from data-testid attributes
+            for (let i = 0; i < filteredCspButtons.length; i++) {
                 try {
-                    const button = freshCspButtons[i];
+                    const button = filteredCspButtons[i];
+                    const testId = await button.getAttribute('data-testid');
                     
-                    // Scroll button into view
-                    await button.scrollIntoViewIfNeeded();
-                    await this.page.waitForTimeout(500);
-                    
-                    // Check if button is already expanded
-                    const isExpanded = await button.getAttribute('aria-expanded');
-                    
-                    // If not expanded, click to open
-                    if (isExpanded !== 'true') {
-                        await button.click();
-                        console.log(`Clicked CSP button ${i + 1} of ${freshCspButtons.length} to open`);
-                        await this.page.waitForTimeout(2000);
-                    } else {
-                        console.log(`CSP button ${i + 1} already expanded, extracting campaign number`);
-                    }
-                    
-                    // Extract campaign number from the opened panel
-                    const campaignNumber = await this.extractCampaignNumberFromPanel();
-                    
-                    if (campaignNumber && !uniqueRecalls.has(campaignNumber)) {
-                        uniqueRecalls.add(campaignNumber);
-                        console.log(`Found CSP campaign number: ${campaignNumber}`);
-                        recalls.push({
-                            recallNumber: campaignNumber,
-                            element: 'customer-satisfaction-program',
-                            fullRecallNumber: campaignNumber,
-                            type: 'Safety'
-                        });
-                    } else if (campaignNumber) {
-                        console.log(`Campaign number ${campaignNumber} already found, skipping duplicate`);
-                    }
-                    
-                    // Close the panel if needed (for next button)
-                    if (i < freshCspButtons.length - 1) {
-                        const stillExpanded = await button.getAttribute('aria-expanded');
-                        if (stillExpanded === 'true') {
-                            await button.click();
-                            await this.page.waitForTimeout(500);
+                    if (testId && testId.startsWith('button-')) {
+                        // Extract campaign number from data-testid (format: button-22L05)
+                        const campaignNumber = testId.replace('button-', '').toUpperCase();
+                        
+                        // Validate it's a campaign number format (2 digits, letter, 2 digits)
+                        const campaignPattern = /^\d{2}[A-Za-z]\d{2}$/;
+                        
+                        if (campaignPattern.test(campaignNumber)) {
+                            if (!uniqueRecalls.has(campaignNumber)) {
+                                uniqueRecalls.add(campaignNumber);
+                                console.log(`Found CSP campaign number: ${campaignNumber}`);
+                                recalls.push({
+                                    recallNumber: campaignNumber,
+                                    element: 'customer-satisfaction-program',
+                                    fullRecallNumber: campaignNumber,
+                                    type: 'Safety'
+                                });
+                            } else {
+                                console.log(`Campaign number ${campaignNumber} already found, skipping duplicate`);
+                            }
                         }
                     }
-                    
                 } catch (e) {
                     console.log(`Error processing CSP button ${i + 1}:`, e.message);
                     continue;
@@ -399,72 +482,65 @@ class FordScraper {
             const uniqueRecalls = new Set();
             const recalls = [];
             
-            // Method 1: Check for recall buttons and click each one to extract recall numbers
+            // Method 1: Extract recall numbers directly from button data-testid attributes
+            // Ford recall buttons have data-testid="button-{RECALL_NUMBER}" format
+            // e.g., button-24V684, button-25V019, button-09V399000
             try {
                 // Wait for buttons to be available
                 await this.page.waitForTimeout(2000);
                 
-                const recallButtons = await this.page.$$('button.recalls-info-button');
+                // Find all buttons with data-testid starting with "button-"
+                // Filter out the section header button and only get recall buttons
+                const allButtons = await this.page.$$('button[data-testid^="button-"]');
+                const recallButtons = [];
+                
+                for (const button of allButtons) {
+                    const testId = await button.getAttribute('data-testid');
+                    // Exclude the section header and only include buttons that match recall number pattern
+                    if (testId && testId !== 'button-safety-recalls-section-header') {
+                        const potentialRecallNumber = testId.replace('button-', '');
+                        // Validate it looks like a recall number (YYV###### format)
+                        const recallPattern = /^\d{2}V\d{3,6}$/;
+                        if (recallPattern.test(potentialRecallNumber)) {
+                            recallButtons.push(button);
+                        }
+                    }
+                }
+                
                 console.log(`Found ${recallButtons.length} recall button(s)`);
                 
                 if (recallButtons.length >= 1) {
-                    // Click each button to open recall details and extract recall numbers
+                    // Extract recall numbers directly from data-testid attributes
                     for (let i = 0; i < recallButtons.length; i++) {
                         try {
-                            // Wait a bit before clicking to ensure page is ready
-                            await this.page.waitForTimeout(1000);
+                            const button = recallButtons[i];
+                            const testId = await button.getAttribute('data-testid');
                             
-                            // Get all buttons again (they might have changed after previous clicks)
-                            const currentButtons = await this.page.$$('button.recalls-info-button');
-                            if (i >= currentButtons.length) {
-                                console.log(`Button index ${i} no longer available, skipping`);
-                                continue;
-                            }
-                            
-                            const button = currentButtons[i];
-                            
-                            // Scroll button into view
-                            await button.scrollIntoViewIfNeeded();
-                            await this.page.waitForTimeout(500);
-                            
-                            // Check if button is already expanded (panel already open)
-                            const isExpanded = await button.getAttribute('aria-expanded');
-                            
-                            // Click the button to open/close recall details
-                            await button.click();
-                            console.log(`Clicked recall button ${i + 1} of ${recallButtons.length}`);
-                            
-                            // Wait for recall details panel to load
-                            await this.page.waitForTimeout(2000);
-                            
-                            // Extract recall number from the opened panel
-                            const recallNumber = await this.extractRecallNumberFromPanel();
-                            
-                            if (recallNumber && !uniqueRecalls.has(recallNumber)) {
-                                uniqueRecalls.add(recallNumber);
-                                console.log(`Found recall number: ${recallNumber}`);
-                                recalls.push({
-                                    recallNumber: recallNumber,
-                                    element: 'recalls-info-button',
-                                    fullRecallNumber: recallNumber,
-                                    type: 'Recall'
-                                });
-                            } else if (recallNumber) {
-                                console.log(`Recall number ${recallNumber} already found, skipping duplicate`);
-                            }
-                            
-                            // If panel is open, close it by clicking again (if needed for next button)
-                            // Check if we need to close it before moving to next button
-                            if (i < recallButtons.length - 1) {
-                                // Check if button is still expanded
-                                const stillExpanded = await button.getAttribute('aria-expanded');
-                                if (stillExpanded === 'true') {
-                                    // Close the panel by clicking again
-                                    await button.click();
-                                    await this.page.waitForTimeout(500);
+                            if (testId && testId.startsWith('button-')) {
+                                // Extract recall number from data-testid (format: button-24V684)
+                                const recallNumber = testId.replace('button-', '');
+                                
+                                // Validate it's a recall number format (YYV###### or similar NHTSA format)
+                                // Pattern: 2 digits, V, followed by 3-6 digits
+                                const recallPattern = /^\d{2}V\d{3,6}$/;
+                                
+                                if (recallPattern.test(recallNumber)) {
+                                    if (!uniqueRecalls.has(recallNumber)) {
+                                        uniqueRecalls.add(recallNumber);
+                                        console.log(`Found recall number: ${recallNumber}`);
+                                        recalls.push({
+                                            recallNumber: recallNumber,
+                                            element: 'recall-button-data-testid',
+                                            fullRecallNumber: recallNumber,
+                                            type: 'Recall'
+                                        });
+                                    } else {
+                                        console.log(`Recall number ${recallNumber} already found, skipping duplicate`);
+                                    }
+                                } else {
+                                    console.log(`Skipping button with testid "${testId}" - doesn't match recall number pattern`);
                                 }
                             }
-                            
                         } catch (e) {
                             console.log(`Error processing recall button ${i + 1}:`, e.message);
                             continue;
@@ -475,62 +551,58 @@ class FordScraper {
                 console.log('Error finding/clicking recall buttons:', e);
             }
             
-            // Method 2: Fallback - Look for recall information using the specific class
+            // Method 2: Fallback - Extract from button IDs and aria-controls attributes
             if (recalls.length === 0) {
-                const recallDataElements = await this.page.$$('.recall-info-piece-data');
-                
-                if (recallDataElements.length > 0) {
-                    console.log(`Found ${recallDataElements.length} recall data elements`);
+                try {
+                    // Look for buttons with IDs matching the pattern button-{RECALL_NUMBER}
+                    const buttonsWithIds = await this.page.$$('button[id^="button-"]');
                     
-                    // Look for recall numbers in the elements
-                    for (const element of recallDataElements) {
+                    for (const button of buttonsWithIds) {
                         try {
-                            const text = await element.textContent();
-                            if (text && text.trim().length > 0) {
-                                // Check if this looks like a recall number (pattern: XXSXX/XXVXXXXXX or XXCXX/XXVXXX)
-                                const recallPattern = /^\d{2}[SC]\d{2}\/\d{2}V\d+$/; // Pattern like 10S13/10V385000, 25C42/25V543
+                            const buttonId = await button.getAttribute('id');
+                            if (buttonId && buttonId.startsWith('button-') && buttonId !== 'button-safety-recalls-section-header') {
+                                const recallNumber = buttonId.replace('button-', '');
+                                // Validate NHTSA recall format: YYV######
+                                const recallPattern = /^\d{2}V\d{3,6}$/;
                                 
-                                if (recallPattern.test(text.trim())) {
-                                    // Extract the first part before the slash (e.g., 10S13 from 10S13/10V385000)
-                                    const recallNumber = text.trim().split('/')[0];
-                                    if (!uniqueRecalls.has(recallNumber)) {
-                                        uniqueRecalls.add(recallNumber);
-                                        console.log(`Found recall number: ${recallNumber} from ${text.trim()}`);
-                                        recalls.push({
-                                            recallNumber: recallNumber,
-                                            element: 'recall-info-piece-data',
-                                            fullRecallNumber: text.trim(),
-                                            type: 'Recall'
-                                        });
-                                    }
+                                if (recallPattern.test(recallNumber) && !uniqueRecalls.has(recallNumber)) {
+                                    uniqueRecalls.add(recallNumber);
+                                    console.log(`Found recall number from button ID: ${recallNumber}`);
+                                    recalls.push({
+                                        recallNumber: recallNumber,
+                                        element: 'recall-button-id',
+                                        fullRecallNumber: recallNumber,
+                                        type: 'Recall'
+                                    });
                                 }
                             }
                         } catch (e) {
-                            console.log('Error extracting text from recall element:', e);
                             continue;
                         }
                     }
+                } catch (e) {
+                    console.log('Error extracting from button IDs:', e);
                 }
             }
             
-            // Method 3: Fallback - Search entire page content for all recall number patterns
+            // Method 3: Fallback - Search entire page content for NHTSA recall number patterns
             if (recalls.length === 0) {
                 try {
                     const pageContent = await this.page.textContent('body');
                     if (pageContent) {
-                        // Pattern to find all recall numbers in the format XXSXX/XXVXXXXXX or XXCXX/XXVXXX
-                        const globalRecallPattern = /\b(\d{2}[SC]\d{2})\/\d{2}V\d+\b/g;
+                        // Pattern to find NHTSA recall numbers: YYV###### (2 digits, V, 3-6 digits)
+                        const globalRecallPattern = /\b(\d{2}V\d{3,6})\b/g;
                         let match;
                         
                         while ((match = globalRecallPattern.exec(pageContent)) !== null) {
-                            const recallNumber = match[1]; // Extract the first part (e.g., 10S13)
+                            const recallNumber = match[1];
                             if (!uniqueRecalls.has(recallNumber)) {
                                 uniqueRecalls.add(recallNumber);
                                 console.log(`Found recall number (page scan): ${recallNumber}`);
                                 recalls.push({
                                     recallNumber: recallNumber,
                                     element: 'page-content-scan',
-                                    fullRecallNumber: match[0], // Full match like 10S13/10V385000
+                                    fullRecallNumber: recallNumber,
                                     type: 'Recall'
                                 });
                             }
@@ -650,10 +722,15 @@ class FordScraper {
         try {
             if (this.browser) {
                 await this.browser.close();
+                this.browser = null;
+                this.page = null;
                 console.log('Ford scraper closed successfully');
             }
         } catch (error) {
             console.error('Error closing Ford scraper:', error);
+            // Reset references even if close fails
+            this.browser = null;
+            this.page = null;
         }
     }
 }
