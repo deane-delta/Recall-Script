@@ -1174,7 +1174,10 @@ async function createOutputExcel(scrapedData, outputPath) {
               'Type': recallType,
               'EA Number': eaNumber,
               'Work Order': getColumnValue(item.originalRow, 'Work Order', 'WORK ORDER', 'WO', 'WORK ORDER NO', 'WORK ORDER NUMBER', 'WO NUMBER'),
-              'WORK ORDER STATUS': getColumnValue(item.originalRow, 'WORK ORDER STATUS', 'WO STATUS')
+              'WORK ORDER STATUS': (() => {
+                const status = getColumnValue(item.originalRow, 'WORK ORDER STATUS', 'WO STATUS');
+                return status && status.toString().trim() !== '' ? status : 'NONE';
+              })()
             };
 
             excelData.push(row);
