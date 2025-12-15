@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VIN Recall Scraper</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>VIN Recall Scraper</h1>
+            <p>Upload an Excel file with VIN numbers to retrieve recall information from Ford and DocSearch</p>
+        </header>
+
+        <main>
+            <div class="logo-section">
+                <img src="delta-logo.png" alt="Delta Air Lines Logo" class="delta-logo">
+            </div>
+            <div class="upload-section">
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-content">
+                        <div class="upload-icon">📁</div>
+                        <h3>Choose File or Drag & Drop</h3>
+                        <p>Supports CSV, XLS, and XLSX files</p>
+                        <p class="file-size-limit">Make sure VIN column is named "SERIAL NO" or "VIN" and be signed in to DocSearch</p>
+                        <input type="file" id="fileInput" accept=".csv,.xls,.xlsx" hidden>
+                        <button type="button" class="upload-btn" onclick="document.getElementById('fileInput').click()">
+                            Select File
+                        </button>
+                    </div>
+                </div>
+
+                <div class="file-info" id="fileInfo" style="display: none;">
+                    <div class="file-details">
+                        <span class="file-name" id="fileName"></span>
+                        <span class="file-size" id="fileSize"></span>
+                        <button type="button" class="remove-file" onclick="removeFile()">✕</button>
+                    </div>
+                </div>
+
+                <div class="column-selection" id="columnSelection" style="display: none;">
+                    <h4>VIN Column Detection</h4>
+                    <p id="detectionMessage">Looking for VIN numbers in "SERIAL NO" column...</p>
+                </div>
+
+                <div class="upload-controls">
+                    <button type="button" class="process-btn" id="processBtn" onclick="processFile()" disabled>
+                        Process File
+                    </button>
+                </div>
+            </div>
+
+            <div class="progress-section" id="progressSection" style="display: none;">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-text" id="progressText">Processing...</div>
+            </div>
+
+            <div class="results-section" id="resultsSection" style="display: none;">
+                <h3>Processing Results</h3>
+                <div class="results-content" id="resultsContent"></div>
+                <div class="download-section" id="downloadSection" style="display: none;">
+                    <button type="button" class="download-btn" id="downloadBtn" onclick="downloadResults()">
+                        Download Results
+                    </button>
+                </div>
+                
+                <div class="comparison-section" id="comparisonSection" style="display: none;">
+                    <h4>Compare with Reference File</h4>
+                    <p style="color: #625231; margin-bottom: 15px;">Upload a reference Excel file to find missing recall/safety numbers</p>
+                    <div class="upload-area" id="comparisonUploadArea" onclick="document.getElementById('comparisonFileInput').click()">
+                        <div class="upload-content">
+                            <div class="upload-icon">📄</div>
+                            <h3>Select Reference File</h3>
+                            <p>Click to upload or drag and drop</p>
+                            <p class="file-size-limit">Excel files (.xlsx, .xls, .csv)</p>
+                        </div>
+                    </div>
+                    <input type="file" id="comparisonFileInput" accept=".xlsx,.xls,.csv" style="display: none;" onchange="handleComparisonFileSelect(event)">
+                    <div class="file-info" id="comparisonFileInfo" style="display: none;">
+                        <div class="file-details">
+                            <span class="file-name" id="comparisonFileName"></span>
+                            <button type="button" class="remove-file-btn" onclick="removeComparisonFile()">✕</button>
+                        </div>
+                    </div>
+                    <div class="upload-controls" style="margin-top: 20px;">
+                        <button type="button" class="process-btn" id="compareBtn" onclick="compareFiles()" disabled>
+                            Compare Files
+                        </button>
+                    </div>
+                    <div class="download-section" id="comparisonDownloadSection" style="display: none; margin-top: 20px;">
+                        <button type="button" class="download-btn" id="comparisonDownloadBtn" onclick="downloadComparisonResults()">
+                            Download Missing Recall/Safety Numbers
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="error-section" id="errorSection" style="display: none;">
+                <div class="error-message" id="errorMessage"></div>
+            </div>
+        </main>
+
+        <footer>
+            <p>This tool extracts VIN numbers from Excel files and retrieves recall data from Ford's website and DocSearch.</p>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
