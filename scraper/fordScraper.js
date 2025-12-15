@@ -482,135 +482,91 @@ class FordScraper {
             const uniqueRecalls = new Set();
             const recalls = [];
             
-            // Method 1: Extract recall numbers directly from button data-testid attributes
-            // Ford recall buttons have data-testid="button-{RECALL_NUMBER}" format
-            // e.g., button-24V684, button-25V019, button-09V399000
+            // ONLY METHOD: Extract recall numbers from Campaign sections
+            // Structure: <section><p>Campaign</p><p class="text-ford-body1-regular">24S59/24V684</p></section>
             try {
-                // Wait for buttons to be available
+                console.log('Looking for Campaign sections...');
+                
+                // Wait for page to be fully loaded
                 await this.page.waitForTimeout(2000);
                 
-                // Find all buttons with data-testid starting with "button-"
-                // Filter out the section header button and only get recall buttons
-                const allButtons = await this.page.$$('button[data-testid^="button-"]');
-                const recallButtons = [];
+                // Find all sections
+                const allSections = await this.page.$$('section');
                 
-                for (const button of allButtons) {
-                    const testId = await button.getAttribute('data-testid');
-                    // Exclude the section header and only include buttons that match recall number pattern
-                    if (testId && testId !== 'button-safety-recalls-section-header') {
-                        const potentialRecallNumber = testId.replace('button-', '');
-                        // Validate it looks like a recall number (YYV###### format)
-                        const recallPattern = /^\d{2}V\d{3,6}$/;
-                        if (recallPattern.test(potentialRecallNumber)) {
-                            recallButtons.push(button);
+                for (const section of allSections) {
+                    try {
+                        // Check if this section contains a <p> with "Campaign" text
+                        const pElements = await section.$$('p');
+                        let hasCampaign = false;
+                        
+                        for (const p of pElements) {
+                            const pText = await p.textContent();
+                            if (pText && pText.trim() === 'Campaign') {
+                                hasCampaign = true;
+                                break;
+                            }
                         }
+                        
+                        if (hasCampaign) {
+                            // Find the <p> element with class "text-ford-body1-regular" that contains the recall number
+                            const recallPElements = await section.$$('p.text-ford-body1-regular');
+                            
+                            // Process only until we find ONE valid recall number, then move to next section
+                            let foundValidRecall = false;
+                            
+                            for (const recallP of recallPElements) {
+                                if (foundValidRecall) break; // Stop processing this section once we found a valid recall
+                                
+                                try {
+                                    const recallText = await recallP.textContent();
+                                    if (recallText && recallText.trim() && recallText.trim() !== 'Campaign') {
+                                        // Get first 5 characters
+                                        const firstFive = recallText.trim().substring(0, 5).toUpperCase();
+                                        
+                                        // STRICT VALIDATION: Must match exactly - 2 digits, 1 letter, 2 digits (exactly 5 characters)
+                                        // If ANY characteristic is missing, it is NOT a recall number
+                                        const recallPattern = /^\d{2}[A-Za-z]\d{2}$/;
+                                        
+                                        if (recallPattern.test(firstFive) && firstFive.length === 5) {
+                                            const recallNumber = firstFive;
+                                            if (!uniqueRecalls.has(recallNumber)) {
+                                                uniqueRecalls.add(recallNumber);
+                                                console.log(`✅ Found recall number from Campaign section: ${recallNumber} (from "${recallText.trim()}")`);
+                                                recalls.push({
+                                                    recallNumber: recallNumber,
+                                                    element: 'campaign-section',
+                                                    fullRecallNumber: recallText.trim(),
+                                                    type: 'Recall'
+                                                });
+                                                foundValidRecall = true; // Mark that we found a valid recall, stop processing this section
+                                                break; // Immediately move to next section
+                                            } else {
+                                                console.log(`Recall number ${recallNumber} from Campaign section already found, skipping duplicate`);
+                                                foundValidRecall = true; // Already have this one, move to next section
+                                                break;
+                                            }
+                                        } else {
+                                            console.log(`❌ Invalid recall format: "${firstFive}" - must be exactly 2 digits, 1 letter, 2 digits (5 characters total)`);
+                                            // Continue to next <p> element in this section
+                                        }
+                                    }
+                                } catch (e) {
+                                    continue;
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        continue;
                     }
                 }
                 
-                console.log(`Found ${recallButtons.length} recall button(s)`);
-                
-                if (recallButtons.length >= 1) {
-                    // Extract recall numbers directly from data-testid attributes
-                    for (let i = 0; i < recallButtons.length; i++) {
-                        try {
-                            const button = recallButtons[i];
-                            const testId = await button.getAttribute('data-testid');
-                            
-                            if (testId && testId.startsWith('button-')) {
-                                // Extract recall number from data-testid (format: button-24V684)
-                                const recallNumber = testId.replace('button-', '');
-                                
-                                // Validate it's a recall number format (YYV###### or similar NHTSA format)
-                                // Pattern: 2 digits, V, followed by 3-6 digits
-                                const recallPattern = /^\d{2}V\d{3,6}$/;
-                                
-                                if (recallPattern.test(recallNumber)) {
-                                    if (!uniqueRecalls.has(recallNumber)) {
-                                        uniqueRecalls.add(recallNumber);
-                                        console.log(`Found recall number: ${recallNumber}`);
-                                        recalls.push({
-                                            recallNumber: recallNumber,
-                                            element: 'recall-button-data-testid',
-                                            fullRecallNumber: recallNumber,
-                                            type: 'Recall'
-                                        });
-                                    } else {
-                                        console.log(`Recall number ${recallNumber} already found, skipping duplicate`);
-                                    }
-                                } else {
-                                    console.log(`Skipping button with testid "${testId}" - doesn't match recall number pattern`);
-                                }
-                            }
-                        } catch (e) {
-                            console.log(`Error processing recall button ${i + 1}:`, e.message);
-                            continue;
-                        }
-                    }
+                if (recalls.length > 0) {
+                    console.log(`✅ Found ${recalls.length} recall number(s) from Campaign sections`);
+                } else {
+                    console.log('No valid recall numbers found in Campaign sections');
                 }
             } catch (e) {
-                console.log('Error finding/clicking recall buttons:', e);
-            }
-            
-            // Method 2: Fallback - Extract from button IDs and aria-controls attributes
-            if (recalls.length === 0) {
-                try {
-                    // Look for buttons with IDs matching the pattern button-{RECALL_NUMBER}
-                    const buttonsWithIds = await this.page.$$('button[id^="button-"]');
-                    
-                    for (const button of buttonsWithIds) {
-                        try {
-                            const buttonId = await button.getAttribute('id');
-                            if (buttonId && buttonId.startsWith('button-') && buttonId !== 'button-safety-recalls-section-header') {
-                                const recallNumber = buttonId.replace('button-', '');
-                                // Validate NHTSA recall format: YYV######
-                                const recallPattern = /^\d{2}V\d{3,6}$/;
-                                
-                                if (recallPattern.test(recallNumber) && !uniqueRecalls.has(recallNumber)) {
-                                    uniqueRecalls.add(recallNumber);
-                                    console.log(`Found recall number from button ID: ${recallNumber}`);
-                                    recalls.push({
-                                        recallNumber: recallNumber,
-                                        element: 'recall-button-id',
-                                        fullRecallNumber: recallNumber,
-                                        type: 'Recall'
-                                    });
-                                }
-                            }
-                        } catch (e) {
-                            continue;
-                        }
-                    }
-                } catch (e) {
-                    console.log('Error extracting from button IDs:', e);
-                }
-            }
-            
-            // Method 3: Fallback - Search entire page content for NHTSA recall number patterns
-            if (recalls.length === 0) {
-                try {
-                    const pageContent = await this.page.textContent('body');
-                    if (pageContent) {
-                        // Pattern to find NHTSA recall numbers: YYV###### (2 digits, V, 3-6 digits)
-                        const globalRecallPattern = /\b(\d{2}V\d{3,6})\b/g;
-                        let match;
-                        
-                        while ((match = globalRecallPattern.exec(pageContent)) !== null) {
-                            const recallNumber = match[1];
-                            if (!uniqueRecalls.has(recallNumber)) {
-                                uniqueRecalls.add(recallNumber);
-                                console.log(`Found recall number (page scan): ${recallNumber}`);
-                                recalls.push({
-                                    recallNumber: recallNumber,
-                                    element: 'page-content-scan',
-                                    fullRecallNumber: recallNumber,
-                                    type: 'Recall'
-                                });
-                            }
-                        }
-                    }
-                } catch (e) {
-                    console.log('Error scanning page content for recalls:', e);
-                }
+                console.log('Error extracting from Campaign sections:', e.message);
             }
             
             // Extract Customer Satisfaction Programs (campaign numbers)
