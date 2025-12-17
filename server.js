@@ -1279,12 +1279,27 @@ async function createOutputExcel(scrapedData, outputPath) {
       }
     }
     
-    // Create grouped data with "Ford Recall Number" as first column
-    const groupedData = [];
-    const sortedRecallNumbers = Array.from(recallGroups.keys()).sort();
+    // Separate recall numbers into multi-occurrence and single-occurrence
+    const multiOccurrenceRecalls = [];
+    const singleOccurrenceRecalls = [];
     
-    for (const recallNumber of sortedRecallNumbers) {
-      const vehicles = recallGroups.get(recallNumber);
+    for (const [recallNumber, vehicles] of recallGroups.entries()) {
+      if (vehicles.length > 1) {
+        multiOccurrenceRecalls.push({ recallNumber, vehicles });
+      } else {
+        singleOccurrenceRecalls.push({ recallNumber, vehicles });
+      }
+    }
+    
+    // Sort both groups by recall number
+    multiOccurrenceRecalls.sort((a, b) => a.recallNumber.localeCompare(b.recallNumber));
+    singleOccurrenceRecalls.sort((a, b) => a.recallNumber.localeCompare(b.recallNumber));
+    
+    // Create grouped data: multi-occurrence first, then single-occurrence at bottom
+    const groupedData = [];
+    
+    // Add multi-occurrence recalls first
+    for (const { recallNumber, vehicles } of multiOccurrenceRecalls) {
       for (const vehicle of vehicles) {
         // Reorder columns to put "Ford Recall Number" first
         const groupedRow = {
@@ -1303,6 +1318,29 @@ async function createOutputExcel(scrapedData, outputPath) {
         groupedData.push(groupedRow);
       }
     }
+    
+    // Add single-occurrence recalls at the bottom
+    for (const { recallNumber, vehicles } of singleOccurrenceRecalls) {
+      for (const vehicle of vehicles) {
+        // Reorder columns to put "Ford Recall Number" first
+        const groupedRow = {
+          'Ford Recall Number': vehicle['Ford Recall Number'],
+          'Type': vehicle['Type'],
+          'EA Number': vehicle['EA Number'],
+          'ASSET NO': vehicle['ASSET NO'],
+          'YEAR': vehicle['YEAR'],
+          'MODEL': vehicle['MODEL'],
+          'MANUFACTURER': vehicle['MANUFACTURER'],
+          'STATION': vehicle['STATION'],
+          'VIN': vehicle['VIN'],
+          'Work Order': vehicle['Work Order'],
+          'WORK ORDER STATUS': vehicle['WORK ORDER STATUS']
+        };
+        groupedData.push(groupedRow);
+      }
+    }
+    
+    console.log(`📊 Recall grouping: ${multiOccurrenceRecalls.length} multi-occurrence, ${singleOccurrenceRecalls.length} single-occurrence`);
     
     // Create grouped worksheet
     let groupedWorksheet;
