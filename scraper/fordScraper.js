@@ -271,6 +271,17 @@ class FordScraper {
             };
 
         } catch (error) {
+            // Check for NS_ERROR_ABORT (Firefox-specific network error)
+            const isNsErrorAbort = error.message.includes('NS_ERROR_ABORT') || 
+                                   error.message.includes('NS_ERROR') ||
+                                   (error.name && error.name.includes('NS_ERROR'));
+            
+            // If NS_ERROR_ABORT, propagate it so server.js can handle browser restart
+            if (isNsErrorAbort) {
+                console.error(`❌ NS_ERROR_ABORT detected for VIN ${vinNumber}:`, error.message);
+                throw new Error(`NS_ERROR_ABORT: ${error.message}`);
+            }
+            
             // Check if it's a timeout error and we haven't exceeded max retries
             const isTimeoutError = error.name === 'TimeoutError' || 
                                    error.message.includes('Timeout') || 

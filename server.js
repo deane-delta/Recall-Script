@@ -778,7 +778,7 @@ async function scrapeVinData(vinNumbers, sessionId = null) {
     
     if (sessionId) emitProgress(sessionId, { type: 'progress', message: 'Scraping Ford recall data...', progress: 30 });
     
-    const BATCH_SIZE = 100; // Restart browser every 100 VINs to prevent memory issues
+    const BATCH_SIZE = 50; // Restart browser every 50 VINs to prevent memory issues
     const REQUEST_TIMEOUT = 60000; // 60 second timeout per VIN
     
     for (let i = 0; i < vinNumbers.length; i++) {
@@ -802,24 +802,77 @@ async function scrapeVinData(vinNumbers, sessionId = null) {
         processedAt: new Date().toISOString()
       };
 
-      // Scrape Ford data with timeout
+      // Scrape Ford data with timeout and retry logic
       if (fordInitialized) {
-        try {
-          // Add timeout wrapper for individual VIN scraping
-          const scrapingPromise = fordScraper.scrapeVinRecallData(vin);
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Request timeout after 60 seconds')), REQUEST_TIMEOUT)
-          );
-          
-          vinResult.fordData = await Promise.race([scrapingPromise, timeoutPromise]);
-          console.log(`✅ Ford data scraped for VIN: ${vin}`);
-        } catch (error) {
-          console.error(`❌ Error scraping Ford data for VIN ${vin}:`, error.message);
-          vinResult.fordData = {
-            vin: vin,
-            success: false,
-            error: error.message
-          };
+        let retryCount = 0;
+        const MAX_RETRIES = 1; // One retry with browser restart
+        let scrapingSuccess = false;
+        
+        while (retryCount <= MAX_RETRIES && !scrapingSuccess) {
+          try {
+            // Add timeout wrapper for individual VIN scraping
+            const scrapingPromise = fordScraper.scrapeVinRecallData(vin);
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Request timeout after 60 seconds')), REQUEST_TIMEOUT)
+            );
+            
+            vinResult.fordData = await Promise.race([scrapingPromise, timeoutPromise]);
+            
+            // Check if scraping was successful
+            if (vinResult.fordData && vinResult.fordData.success !== false) {
+              scrapingSuccess = true;
+              console.log(`✅ Ford data scraped for VIN: ${vin}`);
+            } else {
+              throw new Error(vinResult.fordData?.error || 'Scraping failed');
+            }
+          } catch (error) {
+            const errorMessage = error.message || '';
+            const isVinInputError = errorMessage.includes('Could not find VIN input field');
+            const isNsErrorAbort = errorMessage.includes('NS_ERROR_ABORT');
+            const needsBrowserRestart = isVinInputError || isNsErrorAbort;
+            
+            if (needsBrowserRestart && retryCount < MAX_RETRIES) {
+              console.error(`❌ Error scraping Ford data for VIN ${vin}: ${errorMessage}`);
+              console.log(`🔄 Restarting browser and retrying (attempt ${retryCount + 1}/${MAX_RETRIES + 1})...`);
+              
+              try {
+                await fordScraper.close();
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                const reinitialized = await fordScraper.initialize();
+                
+                if (!reinitialized) {
+                  console.error('❌ Failed to restart browser. Marking as failed...');
+                  vinResult.fordData = {
+                    vin: vin,
+                    success: false,
+                    error: `Failed to restart browser after error: ${errorMessage}`
+                  };
+                  scrapingSuccess = true; // Stop retrying
+                } else {
+                  console.log('✅ Browser restarted successfully. Retrying...');
+                  retryCount++;
+                  // Continue to retry
+                }
+              } catch (restartError) {
+                console.error('❌ Error during browser restart:', restartError);
+                vinResult.fordData = {
+                  vin: vin,
+                  success: false,
+                  error: `Browser restart failed: ${restartError.message}`
+                };
+                scrapingSuccess = true; // Stop retrying
+              }
+            } else {
+              // No retry needed or max retries reached
+              console.error(`❌ Error scraping Ford data for VIN ${vin}:`, errorMessage);
+              vinResult.fordData = {
+                vin: vin,
+                success: false,
+                error: errorMessage
+              };
+              scrapingSuccess = true; // Stop retrying
+            }
+          }
         }
       }
 
