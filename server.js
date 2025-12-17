@@ -886,17 +886,17 @@ async function scrapeVinData(vinNumbers, sessionId = null) {
 
     // PHASE 3: Process only VINs with Ford recall numbers through DocSearch scraper
     if (docsearchAuthenticated) {
-      // Collect all recall numbers that need to be checked
-      const recallsToCheck = [];
-      const recallToResultMap = new Map(); // Map recall number to result object
+      // STEP 1: Collect all unique recall/satisfaction numbers across all VINs
+      const uniqueRecallNumbers = new Set();
+      const recallToVinsMap = new Map(); // Map recall number to array of VINs that have it
       
+      // Initialize docsearchDataByRecall map for each result
       for (const result of results) {
         if (result.fordData && 
             result.fordData.success && 
             result.fordData.recallData && 
             result.fordData.recallData.recalls) {
           
-          // Initialize docsearchDataByRecall map for this result
           result.docsearchDataByRecall = new Map();
           
           // Get all valid recall numbers for this VIN
@@ -906,35 +906,49 @@ async function scrapeVinData(vinNumbers, sessionId = null) {
             recall.recallNumber !== 'No recall information available'
           );
           
-          // Add each recall number to the list to check
+          // Track which VINs have which recall numbers
           for (const recall of validRecalls) {
-            recallsToCheck.push({
-              recallNumber: recall.recallNumber,
+            const recallNum = recall.recallNumber;
+            uniqueRecallNumbers.add(recallNum);
+            
+            if (!recallToVinsMap.has(recallNum)) {
+              recallToVinsMap.set(recallNum, []);
+            }
+            recallToVinsMap.get(recallNum).push({
               vin: result.vin,
               result: result
             });
-            recallToResultMap.set(recall.recallNumber, result);
           }
         }
       }
 
-      console.log(`\n=== PHASE 3: DOCSEARCH SCRAPING (${recallsToCheck.length} recall numbers to check) ===`);
+      // STEP 2: Convert Set to Array for iteration
+      const uniqueRecallsArray = Array.from(uniqueRecallNumbers);
+      const totalRecallsBeforeDedup = Array.from(recallToVinsMap.values()).reduce((sum, vins) => sum + vins.length, 0);
+      
+      console.log(`\n=== PHASE 3: DOCSEARCH SCRAPING ===`);
+      console.log(`📊 Total recall/satisfaction numbers found: ${totalRecallsBeforeDedup}`);
+      console.log(`✅ Unique recall/satisfaction numbers to search: ${uniqueRecallsArray.length}`);
+      console.log(`⚡ Efficiency improvement: ${totalRecallsBeforeDedup - uniqueRecallsArray.length} duplicate searches avoided`);
       
       if (sessionId) emitProgress(sessionId, { type: 'progress', message: 'Scraping DocSearch data...', progress: 75 });
       
+      // STEP 3: Search each unique recall number once and store results
+      const recallToDocsearchDataMap = new Map(); // Map recall number to DocSearch result
       const DOCSEARCH_BATCH_SIZE = 100; // Restart browser every 100 requests
       const DOCSEARCH_REQUEST_TIMEOUT = 60000; // 60 second timeout per request
       
-      for (let i = 0; i < recallsToCheck.length; i++) {
-        const { recallNumber, vin, result } = recallsToCheck[i];
-        const progressPercent = 75 + Math.floor((i / recallsToCheck.length) * 15); // 75-90% progress
+      for (let i = 0; i < uniqueRecallsArray.length; i++) {
+        const recallNumber = uniqueRecallsArray[i];
+        const progressPercent = 75 + Math.floor((i / uniqueRecallsArray.length) * 15); // 75-90% progress
+        const vinsWithThisRecall = recallToVinsMap.get(recallNumber);
         
-        console.log(`\nDocSearch scraping ${i + 1}/${recallsToCheck.length}: Recall ${recallNumber} (VIN: ${vin})`);
+        console.log(`\nDocSearch scraping ${i + 1}/${uniqueRecallsArray.length}: Recall ${recallNumber} (affects ${vinsWithThisRecall.length} VIN(s))`);
         
         if (sessionId) {
           emitProgress(sessionId, { 
             type: 'progress', 
-            message: `Scraping DocSearch data... (${i + 1}/${recallsToCheck.length})`, 
+            message: `Scraping DocSearch data... (${i + 1}/${uniqueRecallsArray.length})`, 
             progress: progressPercent 
           });
         }
@@ -948,13 +962,14 @@ async function scrapeVinData(vinNumbers, sessionId = null) {
           
           const docsearchData = await Promise.race([scrapingPromise, timeoutPromise]);
           
-          // Store DocSearch data per recall number
-          result.docsearchDataByRecall.set(recallNumber, docsearchData);
+          // Store DocSearch data for this recall number
+          recallToDocsearchDataMap.set(recallNumber, docsearchData);
           
-          console.log(`✅ DocSearch data scraped for Recall ${recallNumber} (VIN: ${vin}, EA Exists: ${docsearchData.eaExists}, EA Number: ${docsearchData.eaNumber || 'NONE'})`);
+          console.log(`✅ DocSearch data scraped for Recall ${recallNumber} (EA Exists: ${docsearchData.eaExists}, EA Number: ${docsearchData.eaNumber || 'NONE'})`);
+          console.log(`   → This result will be applied to ${vinsWithThisRecall.length} VIN(s)`);
         } catch (error) {
-          console.error(`❌ Error scraping DocSearch data for Recall ${recallNumber} (VIN: ${vin}):`, error.message);
-          result.docsearchDataByRecall.set(recallNumber, {
+          console.error(`❌ Error scraping DocSearch data for Recall ${recallNumber}:`, error.message);
+          recallToDocsearchDataMap.set(recallNumber, {
             recallNumber: recallNumber,
             success: false,
             error: error.message,
@@ -964,7 +979,7 @@ async function scrapeVinData(vinNumbers, sessionId = null) {
         }
 
         // Restart browser every BATCH_SIZE requests to prevent memory issues
-        if ((i + 1) % DOCSEARCH_BATCH_SIZE === 0 && i < recallsToCheck.length - 1 && docsearchInitialized) {
+        if ((i + 1) % DOCSEARCH_BATCH_SIZE === 0 && i < uniqueRecallsArray.length - 1 && docsearchInitialized) {
           console.log(`\n⚠️ Restarting DocSearch browser after ${i + 1} requests to maintain stability...`);
           await docsearchScraper.close();
           const reinitialized = await docsearchScraper.initialize();
@@ -983,8 +998,35 @@ async function scrapeVinData(vinNumbers, sessionId = null) {
         }
 
         // Add delay between requests to be respectful to DocSearch website
-        if (i < recallsToCheck.length - 1) {
+        if (i < uniqueRecallsArray.length - 1) {
           await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+      }
+
+      // STEP 4: Map DocSearch results back to each VIN's recall data
+      console.log(`\n=== MAPPING DOCSEARCH RESULTS TO VINS ===`);
+      for (const [recallNumber, vins] of recallToVinsMap.entries()) {
+        const docsearchData = recallToDocsearchDataMap.get(recallNumber);
+        
+        if (docsearchData) {
+          // Assign the DocSearch data to all VINs that have this recall number
+          for (const { vin, result } of vins) {
+            result.docsearchDataByRecall.set(recallNumber, docsearchData);
+          }
+          console.log(`✅ Mapped DocSearch data for Recall ${recallNumber} to ${vins.length} VIN(s)`);
+        } else {
+          // If no DocSearch data (error case), assign error result to all VINs
+          const errorData = {
+            recallNumber: recallNumber,
+            success: false,
+            error: 'DocSearch data not available',
+            eaExists: false,
+            eaNumber: null
+          };
+          for (const { vin, result } of vins) {
+            result.docsearchDataByRecall.set(recallNumber, errorData);
+          }
+          console.log(`⚠️ No DocSearch data available for Recall ${recallNumber} (affects ${vins.length} VIN(s))`);
         }
       }
     }
