@@ -1116,18 +1116,34 @@ async function createOutputExcel(scrapedData, outputPath) {
         const getColumnValue = (row, primaryKey, ...alternateKeys) => {
           if (!row) return '';
           
-          // Try primary key first
+          // Normalize function to trim and uppercase for comparison
+          const normalize = (str) => str ? str.toString().trim().toUpperCase().replace(/\s+/g, ' ') : '';
+          
+          const normalizedPrimary = normalize(primaryKey);
+          const normalizedAlternates = alternateKeys.map(k => normalize(k));
+          
+          // Try primary key first (exact match)
           if (row[primaryKey]) return row[primaryKey];
           
-          // Try alternate keys
+          // Try alternate keys (exact match)
           for (const key of alternateKeys) {
             if (row[key]) return row[key];
           }
           
-          // Try case-insensitive match
+          // Try case-insensitive and whitespace-tolerant match
           for (const [key, value] of Object.entries(row)) {
-            if (key.toUpperCase() === primaryKey.toUpperCase()) {
+            const normalizedKey = normalize(key);
+            
+            // Check against primary key
+            if (normalizedKey === normalizedPrimary) {
               return value;
+            }
+            
+            // Check against alternate keys
+            for (const normalizedAlt of normalizedAlternates) {
+              if (normalizedKey === normalizedAlt) {
+                return value;
+              }
             }
           }
           
@@ -1215,9 +1231,9 @@ async function createOutputExcel(scrapedData, outputPath) {
               'Ford Recall Number': recall.recallNumber,
               'Type': recallType,
               'EA Number': eaNumber,
-              'Work Order': getColumnValue(item.originalRow, 'Work Order', 'WORK ORDER', 'WO', 'WORK ORDER NO', 'WORK ORDER NUMBER', 'WO NUMBER'),
+              'Work Order': getColumnValue(item.originalRow, 'Work Order', 'WORK ORDER', 'WO', 'WORK ORDER NO', 'WORK ORDER NUMBER', 'WO NUMBER', 'WorkOrder', 'WORKORDER'),
               'WORK ORDER STATUS': (() => {
-                const status = getColumnValue(item.originalRow, 'WORK ORDER STATUS', 'WO STATUS');
+                const status = getColumnValue(item.originalRow, 'WORK ORDER STATUS', 'WO STATUS', 'WO Status', 'Work Order Status', 'WORK ORDER STAT', 'WO STAT', 'WorkOrderStatus', 'WORKORDERSTATUS', 'WOStatus', 'WOSTATUS');
                 return status && status.toString().trim() !== '' ? status : 'NONE';
               })()
             };
