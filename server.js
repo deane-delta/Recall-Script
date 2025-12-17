@@ -1265,26 +1265,212 @@ async function createOutputExcel(scrapedData, outputPath) {
       console.warn('   3. There was an error during scraping');
     }
     
-    // Create worksheet with data (will have headers automatically from keys)
-    const worksheet = XLSX.utils.json_to_sheet(excelData);
+    // SHEET 1: Grouped by Recall Number (New Design)
+    // Group all rows by "Ford Recall Number"
+    const recallGroups = new Map();
     
-    // Set column widths
-    const columnWidths = [
-      { wch: 18 }, // ASSET NO
-      { wch: 8 },  // YEAR
-      { wch: 15 }, // MODEL
-      { wch: 15 }, // MANUFACTURER
-      { wch: 20 }, // STATION
-      { wch: 20 }, // VIN
-      { wch: 25 }, // Ford Recall Number
-      { wch: 12 }, // Type
-      { wch: 25 }, // EA Number
-      { wch: 18 }, // Work Order
-      { wch: 20 }  // WORK ORDER STATUS
-    ];
-    worksheet['!cols'] = columnWidths;
+    for (const row of excelData) {
+      const recallNumber = row['Ford Recall Number'];
+      if (recallNumber) {
+        if (!recallGroups.has(recallNumber)) {
+          recallGroups.set(recallNumber, []);
+        }
+        recallGroups.get(recallNumber).push(row);
+      }
+    }
+    
+    // Create grouped data with "Ford Recall Number" as first column
+    const groupedData = [];
+    const sortedRecallNumbers = Array.from(recallGroups.keys()).sort();
+    
+    for (const recallNumber of sortedRecallNumbers) {
+      const vehicles = recallGroups.get(recallNumber);
+      for (const vehicle of vehicles) {
+        // Reorder columns to put "Ford Recall Number" first
+        const groupedRow = {
+          'Ford Recall Number': vehicle['Ford Recall Number'],
+          'Type': vehicle['Type'],
+          'EA Number': vehicle['EA Number'],
+          'ASSET NO': vehicle['ASSET NO'],
+          'YEAR': vehicle['YEAR'],
+          'MODEL': vehicle['MODEL'],
+          'MANUFACTURER': vehicle['MANUFACTURER'],
+          'STATION': vehicle['STATION'],
+          'VIN': vehicle['VIN'],
+          'Work Order': vehicle['Work Order'],
+          'WORK ORDER STATUS': vehicle['WORK ORDER STATUS']
+        };
+        groupedData.push(groupedRow);
+      }
+    }
+    
+    // Create grouped worksheet
+    let groupedWorksheet;
+    if (groupedData.length > 0) {
+      groupedWorksheet = XLSX.utils.json_to_sheet(groupedData);
+      
+      // Set column widths for grouped sheet (Ford Recall Number first)
+      const groupedColumnWidths = [
+        { wch: 25 }, // Ford Recall Number (first column)
+        { wch: 12 }, // Type
+        { wch: 25 }, // EA Number
+        { wch: 18 }, // ASSET NO
+        { wch: 8 },  // YEAR
+        { wch: 15 }, // MODEL
+        { wch: 15 }, // MANUFACTURER
+        { wch: 20 }, // STATION
+        { wch: 20 }, // VIN
+        { wch: 18 }, // Work Order
+        { wch: 20 }  // WORK ORDER STATUS
+      ];
+      groupedWorksheet['!cols'] = groupedColumnWidths;
+      
+      // Set up row grouping/outlining for collapsible groups
+      // Initialize !rows array (row 0 is header, so data starts at row 1)
+      if (!groupedWorksheet['!rows']) {
+        groupedWorksheet['!rows'] = [];
+      }
+      
+      // Track current recall number and group boundaries
+      let currentRecallNumber = null;
+      let groupStartRow = null;
+      const rowGroups = []; // Array of {startRow, endRow, recallNumber}
+      
+      // Identify groups (consecutive rows with same recall number)
+      for (let i = 0; i < groupedData.length; i++) {
+        const rowRecallNumber = groupedData[i]['Ford Recall Number'];
+        
+        if (rowRecallNumber !== currentRecallNumber) {
+          // New group starting
+          if (currentRecallNumber !== null && groupStartRow !== null) {
+            // Save previous group
+            rowGroups.push({
+              startRow: groupStartRow,
+              endRow: i, // End row (exclusive)
+              recallNumber: currentRecallNumber
+            });
+          }
+          currentRecallNumber = rowRecallNumber;
+          groupStartRow = i + 1; // +1 because row 0 is header
+        }
+      }
+      
+      // Save last group
+      if (currentRecallNumber !== null && groupStartRow !== null) {
+        rowGroups.push({
+          startRow: groupStartRow,
+          endRow: groupedData.length, // End row (exclusive)
+          recallNumber: currentRecallNumber
+        });
+      }
+      
+      // Set outline levels for each row to create collapsible groups
+      // Row 0 is header (level 0, no outline)
+      groupedWorksheet['!rows'][0] = { level: 0, hidden: false };
+      
+      // Initialize all rows
+      for (let i = 1; i <= groupedData.length; i++) {
+        if (!groupedWorksheet['!rows'][i]) {
+          groupedWorksheet['!rows'][i] = {};
+        }
+      }
+      
+      // Set outline levels for each group
+      // First row of each group = level 1 (visible, acts as group header)
+      // Remaining rows = level 2 (hidden by default, collapsed)
+      for (const group of rowGroups) {
+        // First row of group is at level 1 (visible, acts as summary/header)
+        const firstRowIndex = group.startRow;
+        groupedWorksheet['!rows'][firstRowIndex].level = 1;
+        groupedWorksheet['!rows'][firstRowIndex].hidden = false;
+        
+        // Remaining rows in group are at level 2 (hidden by default - collapsed)
+        for (let i = firstRowIndex + 1; i < group.endRow; i++) {
+          groupedWorksheet['!rows'][i].level = 2;
+          groupedWorksheet['!rows'][i].hidden = true; // Hidden by default = collapsed
+        }
+      }
+      
+      // Configure outline settings for row grouping
+      // This tells Excel to create collapsible groups for rows at level 2
+      groupedWorksheet['!outline'] = {
+        above: false,      // Groups are below (rows are grouped, not columns)
+        below: true,       // Groups are below
+        left: false,
+        right: false,
+        summaryBelow: true,  // Summary rows are below the detail
+        summaryRight: false
+      };
+      
+      console.log(`📋 Created ${rowGroups.length} collapsible recall groups`);
+      console.log(`   Groups are collapsed by default - use outline controls to expand`);
+    } else {
+      // Create empty worksheet with headers
+      groupedWorksheet = XLSX.utils.json_to_sheet([{
+        'Ford Recall Number': '',
+        'Type': '',
+        'EA Number': '',
+        'ASSET NO': '',
+        'YEAR': '',
+        'MODEL': '',
+        'MANUFACTURER': '',
+        'STATION': '',
+        'VIN': '',
+        'Work Order': '',
+        'WORK ORDER STATUS': ''
+      }]);
+      const groupedColumnWidths = [
+        { wch: 25 }, { wch: 12 }, { wch: 25 }, { wch: 18 }, { wch: 8 },
+        { wch: 15 }, { wch: 15 }, { wch: 20 }, { wch: 20 }, { wch: 18 }, { wch: 20 }
+      ];
+      groupedWorksheet['!cols'] = groupedColumnWidths;
+    }
+    
+    // SHEET 2: Original format (Current Design)
+    // Create worksheet with data (will have headers automatically from keys)
+    let worksheet;
+    if (excelData.length > 0) {
+      worksheet = XLSX.utils.json_to_sheet(excelData);
+      
+      // Set column widths for original sheet
+      const columnWidths = [
+        { wch: 18 }, // ASSET NO
+        { wch: 8 },  // YEAR
+        { wch: 15 }, // MODEL
+        { wch: 15 }, // MANUFACTURER
+        { wch: 20 }, // STATION
+        { wch: 20 }, // VIN
+        { wch: 25 }, // Ford Recall Number
+        { wch: 12 }, // Type
+        { wch: 25 }, // EA Number
+        { wch: 18 }, // Work Order
+        { wch: 20 }  // WORK ORDER STATUS
+      ];
+      worksheet['!cols'] = columnWidths;
+    } else {
+      // Create empty worksheet with headers
+      worksheet = XLSX.utils.json_to_sheet([{
+        'ASSET NO': '',
+        'YEAR': '',
+        'MODEL': '',
+        'MANUFACTURER': '',
+        'STATION': '',
+        'VIN': '',
+        'Ford Recall Number': '',
+        'Type': '',
+        'EA Number': '',
+        'Work Order': '',
+        'WORK ORDER STATUS': ''
+      }]);
+      const columnWidths = [
+        { wch: 18 }, { wch: 8 }, { wch: 15 }, { wch: 15 }, { wch: 20 },
+        { wch: 20 }, { wch: 25 }, { wch: 12 }, { wch: 25 }, { wch: 18 }, { wch: 20 }
+      ];
+      worksheet['!cols'] = columnWidths;
+    }
 
-    // Add worksheet to workbook
+    // Add both worksheets to workbook
+    XLSX.utils.book_append_sheet(workbook, groupedWorksheet, 'Grouped by Recall');
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Recall Data');
 
     // Write file
@@ -1294,7 +1480,10 @@ async function createOutputExcel(scrapedData, outputPath) {
     console.log(`✅ VINs with recalls included: ${excelData.length}`);
     console.log(`❌ VINs without recalls skipped: ${scrapedData.length - excelData.length}`);
     console.log(`📊 Total VINs processed: ${scrapedData.length}`);
+    console.log(`📋 Unique recall numbers: ${recallGroups.size}`);
     console.log(`📁 Output Excel file created: ${outputPath}`);
+    console.log(`   - Sheet 1: "Grouped by Recall" (Ford Recall Number first, grouped by recall)`);
+    console.log(`   - Sheet 2: "Recall Data" (original format)`);
     
   } catch (error) {
     console.error('Error creating output Excel file:', error);
