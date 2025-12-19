@@ -417,7 +417,7 @@ class FordScraper {
                                     recallNumber: campaignNumber,
                                     element: 'customer-satisfaction-program',
                                     fullRecallNumber: campaignNumber,
-                                    type: 'Safety'
+                                    type: 'Satisfaction'
                                 });
                             } else {
                                 console.log(`Campaign number ${campaignNumber} already found, skipping duplicate`);

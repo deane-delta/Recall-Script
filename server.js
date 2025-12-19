@@ -187,16 +187,16 @@ app.post('/compare', upload.single('comparisonFile'), async (req, res) => {
       return res.status(404).json({ error: 'Output file not found' });
     }
 
-    // Read the output file to extract all recall/safety numbers
-    console.log('Reading output file to extract recall/safety numbers...');
+    // Read the output file to extract all recall/satisfaction numbers
+    console.log('Reading output file to extract recall/satisfaction numbers...');
     const outputWorkbook = XLSX.readFile(outputFilePath);
     const outputSheetName = outputWorkbook.SheetNames[0];
     const outputWorksheet = outputWorkbook.Sheets[outputSheetName];
     const outputData = XLSX.utils.sheet_to_json(outputWorksheet);
 
-    // Extract all recall/safety numbers with their types and asset numbers from output file
+    // Extract all recall/satisfaction numbers with their types and asset numbers from output file
     // Store each recall-asset combination separately
-    const recallSafetyList = []; // Array of {recallNumber, type, assetNo}
+    const recallSatisfactionList = []; // Array of {recallNumber, type, assetNo}
     outputData.forEach(row => {
       const recallNumber = row['Ford Recall Number'];
       const type = row['Type'] || 'Recall'; // Default to 'Recall' if not specified
@@ -206,7 +206,7 @@ app.post('/compare', upload.single('comparisonFile'), async (req, res) => {
           recallNumber !== 'No recall information available') {
         const trimmedRecall = recallNumber.toString().trim();
         // Store each recall-asset combination
-        recallSafetyList.push({
+        recallSatisfactionList.push({
           recallNumber: trimmedRecall,
           type: type,
           assetNo: assetNo.toString().trim()
@@ -215,8 +215,8 @@ app.post('/compare', upload.single('comparisonFile'), async (req, res) => {
     });
 
     // Create a Set of unique recall numbers for checking
-    const uniqueRecallNumbers = new Set(recallSafetyList.map(item => item.recallNumber));
-    console.log(`Found ${uniqueRecallNumbers.size} unique recall/safety numbers in output file`);
+    const uniqueRecallNumbers = new Set(recallSatisfactionList.map(item => item.recallNumber));
+    console.log(`Found ${uniqueRecallNumbers.size} unique recall/satisfaction numbers in output file`);
 
     // Read the comparison file
     console.log('Reading comparison file...');
@@ -252,7 +252,7 @@ app.post('/compare', upload.single('comparisonFile'), async (req, res) => {
 
     console.log(`Found ${titleValues.length} entries in Title column of comparison file`);
 
-    // Find missing recall/safety numbers
+    // Find missing recall/satisfaction numbers
     // Check if recall number appears anywhere in any Title value (substring search)
     const missingRecalls = [];
     const foundRecallNumbers = new Set(); // Track which recall numbers were found
@@ -271,7 +271,7 @@ app.post('/compare', upload.single('comparisonFile'), async (req, res) => {
     });
     
     // Then, add all recall-asset combinations that are missing
-    recallSafetyList.forEach(item => {
+    recallSatisfactionList.forEach(item => {
       if (!foundRecallNumbers.has(item.recallNumber)) {
         missingRecalls.push({
           recallNumber: item.recallNumber,
@@ -281,17 +281,17 @@ app.post('/compare', upload.single('comparisonFile'), async (req, res) => {
       }
     });
 
-    console.log(`Found ${missingRecalls.length} missing recall/safety numbers`);
+    console.log(`Found ${missingRecalls.length} missing recall/satisfaction numbers`);
 
     // Clean up uploaded comparison file
     fs.unlinkSync(comparisonFilePath);
 
-    // Create Excel file with missing recall/safety numbers
+    // Create Excel file with missing recall/satisfaction numbers
     if (missingRecalls.length > 0) {
       const missingWorkbook = XLSX.utils.book_new();
       const missingData = missingRecalls.map(item => ({
         'ASSET NO': item.assetNo,
-        'Recall/Safety Number': item.recallNumber,
+        'Recall/Satisfaction Number': item.recallNumber,
         'Type': item.type
       }));
 
@@ -300,7 +300,7 @@ app.post('/compare', upload.single('comparisonFile'), async (req, res) => {
       // Set column widths
       missingWorksheet['!cols'] = [
         { wch: 18 }, // ASSET NO
-        { wch: 30 }, // Recall/Safety Number
+        { wch: 30 }, // Recall/Satisfaction Number
         { wch: 12 }  // Type
       ];
       
@@ -326,7 +326,7 @@ app.post('/compare', upload.single('comparisonFile'), async (req, res) => {
         missingFile: null,
         missingCount: 0,
         totalChecked: uniqueRecallNumbers.size,
-        message: 'All recall/safety numbers were found in the reference file'
+        message: 'All recall/satisfaction numbers were found in the reference file'
       });
     }
 
@@ -1271,7 +1271,7 @@ async function createOutputExcel(scrapedData, outputPath) {
               eaNumber = item.docsearchData.eaNumber;
             }
 
-            // Get recall type (Recall or Safety), default to "Recall" if not specified
+            // Get recall type (Recall or Satisfaction), default to "Recall" if not specified
             const recallType = recall.type || 'Recall';
 
             const row = {
@@ -1560,9 +1560,131 @@ async function createOutputExcel(scrapedData, outputPath) {
       worksheet['!cols'] = columnWidths;
     }
 
-    // Add both worksheets to workbook
+    // SHEET 3: Needs EA - Recalls without EA numbers
+    const needsEAData = [];
+    const needsEASet = new Set(); // Track unique recall+type combinations
+    
+    for (const row of excelData) {
+      const recallNumber = row['Ford Recall Number'];
+      const recallType = row['Type'] || 'Recall';
+      const eaNumber = row['EA Number'] || '';
+      
+      // Check if EA Number is missing or 'NONE'
+      const hasNoEA = !eaNumber || 
+                      eaNumber.toString().trim() === '' || 
+                      eaNumber.toString().trim().toUpperCase() === 'NONE';
+      
+      if (hasNoEA && recallNumber) {
+        // Create unique key for recall number + type combination
+        const uniqueKey = `${recallNumber}|${recallType}`;
+        
+        // Only add if we haven't seen this combination before
+        if (!needsEASet.has(uniqueKey)) {
+          needsEASet.add(uniqueKey);
+          needsEAData.push({
+            'Ford Recall Number': recallNumber,
+            'Type': recallType
+          });
+        }
+      }
+    }
+    
+    // Sort by recall number
+    needsEAData.sort((a, b) => {
+      const recallCompare = (a['Ford Recall Number'] || '').localeCompare(b['Ford Recall Number'] || '');
+      if (recallCompare !== 0) return recallCompare;
+      return (a['Type'] || '').localeCompare(b['Type'] || '');
+    });
+    
+    let needsEAWorksheet;
+    if (needsEAData.length > 0) {
+      needsEAWorksheet = XLSX.utils.json_to_sheet(needsEAData);
+      needsEAWorksheet['!cols'] = [
+        { wch: 25 }, // Ford Recall Number
+        { wch: 12 }  // Type
+      ];
+    } else {
+      // Create empty worksheet with headers
+      needsEAWorksheet = XLSX.utils.json_to_sheet([{
+        'Ford Recall Number': '',
+        'Type': ''
+      }]);
+      needsEAWorksheet['!cols'] = [
+        { wch: 25 }, // Ford Recall Number
+        { wch: 12 }  // Type
+      ];
+    }
+    
+    // SHEET 4: Needs WO - Vehicles with EA but no Work Order
+    const needsWOData = [];
+    
+    for (const row of excelData) {
+      const eaNumber = row['EA Number'] || '';
+      const workOrder = row['Work Order'] || '';
+      
+      // Check if EA Number exists and is not 'NONE', but Work Order is missing
+      const hasEA = eaNumber && 
+                    eaNumber.toString().trim() !== '' && 
+                    eaNumber.toString().trim().toUpperCase() !== 'NONE';
+      const hasNoWO = !workOrder || 
+                       workOrder.toString().trim() === '' || 
+                       workOrder.toString().trim().toUpperCase() === 'NONE';
+      
+      if (hasEA && hasNoWO) {
+        needsWOData.push({
+          'EA Number': eaNumber,
+          'Asset NO': row['ASSET NO'] || '',
+          'YEAR': row['YEAR'] || '',
+          'MODEL': row['MODEL'] || '',
+          'STATION': row['STATION'] || '',
+          'VIN': row['VIN'] || ''
+        });
+      }
+    }
+    
+    // Sort by EA Number, then by Asset NO
+    needsWOData.sort((a, b) => {
+      const eaCompare = (a['EA Number'] || '').localeCompare(b['EA Number'] || '');
+      if (eaCompare !== 0) return eaCompare;
+      return (a['Asset NO'] || '').localeCompare(b['Asset NO'] || '');
+    });
+    
+    let needsWOWorksheet;
+    if (needsWOData.length > 0) {
+      needsWOWorksheet = XLSX.utils.json_to_sheet(needsWOData);
+      needsWOWorksheet['!cols'] = [
+        { wch: 25 }, // EA Number
+        { wch: 18 }, // Asset NO
+        { wch: 8 },  // YEAR
+        { wch: 15 }, // MODEL
+        { wch: 20 }, // STATION
+        { wch: 20 }  // VIN
+      ];
+    } else {
+      // Create empty worksheet with headers
+      needsWOWorksheet = XLSX.utils.json_to_sheet([{
+        'EA Number': '',
+        'Asset NO': '',
+        'YEAR': '',
+        'MODEL': '',
+        'STATION': '',
+        'VIN': ''
+      }]);
+      needsWOWorksheet['!cols'] = [
+        { wch: 25 }, // EA Number
+        { wch: 18 }, // Asset NO
+        { wch: 8 },  // YEAR
+        { wch: 15 }, // MODEL
+        { wch: 20 }, // STATION
+        { wch: 20 }  // VIN
+      ];
+    }
+
+    // Add all worksheets to workbook
     XLSX.utils.book_append_sheet(workbook, groupedWorksheet, 'Grouped by Recall');
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Recall Data');
+    XLSX.utils.book_append_sheet(workbook, needsEAWorksheet, 'Needs EA');
+    XLSX.utils.book_append_sheet(workbook, needsWOWorksheet, 'Needs WO');
 
     // Write file
     XLSX.writeFile(workbook, outputPath);
@@ -1575,6 +1697,8 @@ async function createOutputExcel(scrapedData, outputPath) {
     console.log(`📁 Output Excel file created: ${outputPath}`);
     console.log(`   - Sheet 1: "Grouped by Recall" (Ford Recall Number first, grouped by recall)`);
     console.log(`   - Sheet 2: "Recall Data" (original format)`);
+    console.log(`   - Sheet 3: "Needs EA" (${needsEAData.length} recall/satisfaction numbers without EA)`);
+    console.log(`   - Sheet 4: "Needs WO" (${needsWOData.length} vehicles with EA but no Work Order)`);
     
   } catch (error) {
     console.error('Error creating output Excel file:', error);
