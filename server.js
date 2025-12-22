@@ -1560,65 +1560,196 @@ async function createOutputExcel(scrapedData, outputPath) {
       worksheet['!cols'] = columnWidths;
     }
 
-    // SHEET 3: Needs EA - Recalls without EA numbers
-    const needsEAData = [];
-    const needsEASet = new Set(); // Track unique recall+type combinations
-    
-    for (const row of excelData) {
-      const recallNumber = row['Ford Recall Number'];
-      const recallType = row['Type'] || 'Recall';
-      const eaNumber = row['EA Number'] || '';
+    // Helper function to create Needs EA worksheet for a specific type
+    const createNeedsEAWorksheet = (typeFilter, sheetName) => {
+      // Group vehicles by Ford Recall Number for the specified type
+      const needsEAGroups = new Map();
       
-      // Check if EA Number is missing or 'NONE'
-      const hasNoEA = !eaNumber || 
-                      eaNumber.toString().trim() === '' || 
-                      eaNumber.toString().trim().toUpperCase() === 'NONE';
-      
-      if (hasNoEA && recallNumber) {
-        // Create unique key for recall number + type combination
-        const uniqueKey = `${recallNumber}|${recallType}`;
+      for (const row of excelData) {
+        const recallNumber = row['Ford Recall Number'];
+        const recallType = row['Type'] || 'Recall';
+        const eaNumber = row['EA Number'] || '';
         
-        // Only add if we haven't seen this combination before
-        if (!needsEASet.has(uniqueKey)) {
-          needsEASet.add(uniqueKey);
-          needsEAData.push({
+        // Check if EA Number is missing or 'NONE' and matches the type filter
+        const hasNoEA = !eaNumber || 
+                        eaNumber.toString().trim() === '' || 
+                        eaNumber.toString().trim().toUpperCase() === 'NONE';
+        const matchesType = recallType === typeFilter;
+        
+        if (hasNoEA && recallNumber && matchesType) {
+          if (!needsEAGroups.has(recallNumber)) {
+            needsEAGroups.set(recallNumber, []);
+          }
+          needsEAGroups.get(recallNumber).push({
             'Ford Recall Number': recallNumber,
-            'Type': recallType
+            'ASSET NO': row['ASSET NO'] || '',
+            'VIN': row['VIN'] || '',
+            'STATION': row['STATION'] || '',
+            'Total': 1
           });
         }
       }
-    }
+      
+      // Build grouped data with subtotals
+      const needsEAData = [];
+      const sortedRecallNumbers = Array.from(needsEAGroups.keys()).sort();
+      let grandTotal = 0;
+      
+      for (const recallNumber of sortedRecallNumbers) {
+        const vehicles = needsEAGroups.get(recallNumber);
+        
+        // Add vehicle rows for this recall number
+        for (const vehicle of vehicles) {
+          needsEAData.push(vehicle);
+        }
+        
+        // Add subtotal row for this recall number
+        const groupTotal = vehicles.length;
+        grandTotal += groupTotal;
+        needsEAData.push({
+          'Ford Recall Number': `${recallNumber} Total`,
+          'ASSET NO': '',
+          'VIN': '',
+          'STATION': '',
+          'Total': groupTotal
+        });
+      }
+      
+      // Add grand total row
+      if (needsEAData.length > 0) {
+        needsEAData.push({
+          'Ford Recall Number': 'Grand Total',
+          'ASSET NO': '',
+          'VIN': '',
+          'STATION': '',
+          'Total': grandTotal
+        });
+      }
+      
+      let worksheet;
+      if (needsEAData.length > 0) {
+        worksheet = XLSX.utils.json_to_sheet(needsEAData);
+        worksheet['!cols'] = [
+          { wch: 25 }, // Ford Recall Number
+          { wch: 18 }, // ASSET NO
+          { wch: 20 }, // VIN
+          { wch: 20 }, // STATION
+          { wch: 10 }  // Total
+        ];
+        
+        // Set up row grouping/outlining
+        if (!worksheet['!rows']) {
+          worksheet['!rows'] = [];
+        }
+        
+        // Initialize header row
+        worksheet['!rows'][0] = { level: 0, hidden: false };
+        
+        // Track groups and set outline levels
+        let currentRecallNumber = null;
+        let groupStartRow = null;
+        const rowGroups = [];
+        let dataRowIndex = 1; // Start after header
+        
+        for (let i = 0; i < needsEAData.length; i++) {
+          const row = needsEAData[i];
+          const recallNumber = row['Ford Recall Number'];
+          const isTotalRow = recallNumber.includes('Total');
+          
+          if (isTotalRow && recallNumber !== 'Grand Total') {
+            // This is a subtotal row - end of a group
+            if (currentRecallNumber !== null && groupStartRow !== null) {
+              rowGroups.push({
+                startRow: groupStartRow,
+                endRow: dataRowIndex,
+                recallNumber: currentRecallNumber
+              });
+            }
+            // Subtotal row is at level 1
+            if (!worksheet['!rows'][dataRowIndex]) {
+              worksheet['!rows'][dataRowIndex] = {};
+            }
+            worksheet['!rows'][dataRowIndex].level = 1;
+            worksheet['!rows'][dataRowIndex].hidden = false;
+            dataRowIndex++;
+            currentRecallNumber = null;
+            groupStartRow = null;
+          } else if (recallNumber === 'Grand Total') {
+            // Grand total row
+            if (!worksheet['!rows'][dataRowIndex]) {
+              worksheet['!rows'][dataRowIndex] = {};
+            }
+            worksheet['!rows'][dataRowIndex].level = 0;
+            worksheet['!rows'][dataRowIndex].hidden = false;
+            dataRowIndex++;
+          } else {
+            // Regular data row
+            if (recallNumber !== currentRecallNumber) {
+              // New group starting
+              if (currentRecallNumber !== null && groupStartRow !== null) {
+                rowGroups.push({
+                  startRow: groupStartRow,
+                  endRow: dataRowIndex,
+                  recallNumber: currentRecallNumber
+                });
+              }
+              currentRecallNumber = recallNumber;
+              groupStartRow = dataRowIndex;
+            }
+            // Data rows are at level 2
+            if (!worksheet['!rows'][dataRowIndex]) {
+              worksheet['!rows'][dataRowIndex] = {};
+            }
+            worksheet['!rows'][dataRowIndex].level = 2;
+            worksheet['!rows'][dataRowIndex].hidden = true; // Hidden by default
+            dataRowIndex++;
+          }
+        }
+        
+        // Configure outline settings
+        worksheet['!outline'] = {
+          above: false,
+          below: true,
+          left: false,
+          right: false,
+          summaryBelow: true,
+          summaryRight: false
+        };
+      } else {
+        // Create empty worksheet with headers
+        worksheet = XLSX.utils.json_to_sheet([{
+          'Ford Recall Number': '',
+          'ASSET NO': '',
+          'VIN': '',
+          'STATION': '',
+          'Total': ''
+        }]);
+        worksheet['!cols'] = [
+          { wch: 25 }, // Ford Recall Number
+          { wch: 18 }, // ASSET NO
+          { wch: 20 }, // VIN
+          { wch: 20 }, // STATION
+          { wch: 10 }  // Total
+        ];
+      }
+      
+      return { worksheet, count: needsEAGroups.size, total: grandTotal };
+    };
     
-    // Sort by recall number
-    needsEAData.sort((a, b) => {
-      const recallCompare = (a['Ford Recall Number'] || '').localeCompare(b['Ford Recall Number'] || '');
-      if (recallCompare !== 0) return recallCompare;
-      return (a['Type'] || '').localeCompare(b['Type'] || '');
-    });
+    // SHEET 3: Needs EA (Recalls)
+    const needsEARecalls = createNeedsEAWorksheet('Recall', 'Needs EA (Recalls)');
+    const needsEARecallsWorksheet = needsEARecalls.worksheet;
     
-    let needsEAWorksheet;
-    if (needsEAData.length > 0) {
-      needsEAWorksheet = XLSX.utils.json_to_sheet(needsEAData);
-      needsEAWorksheet['!cols'] = [
-        { wch: 25 }, // Ford Recall Number
-        { wch: 12 }  // Type
-      ];
-    } else {
-      // Create empty worksheet with headers
-      needsEAWorksheet = XLSX.utils.json_to_sheet([{
-        'Ford Recall Number': '',
-        'Type': ''
-      }]);
-      needsEAWorksheet['!cols'] = [
-        { wch: 25 }, // Ford Recall Number
-        { wch: 12 }  // Type
-      ];
-    }
+    // SHEET 4: Needs EA (Satisfaction)
+    const needsEASatisfaction = createNeedsEAWorksheet('Satisfaction', 'Needs EA (Satisfaction)');
+    const needsEASatisfactionWorksheet = needsEASatisfaction.worksheet;
     
-    // SHEET 4: Needs WO - Vehicles with EA but no Work Order
-    const needsWOData = [];
+    // SHEET 4: Needs WO - Vehicles with EA but no Work Order (grouped by recall number)
+    // Group vehicles by Ford Recall Number
+    const needsWOGroups = new Map();
     
     for (const row of excelData) {
+      const recallNumber = row['Ford Recall Number'];
       const eaNumber = row['EA Number'] || '';
       const workOrder = row['Work Order'] || '';
       
@@ -1630,60 +1761,168 @@ async function createOutputExcel(scrapedData, outputPath) {
                        workOrder.toString().trim() === '' || 
                        workOrder.toString().trim().toUpperCase() === 'NONE';
       
-      if (hasEA && hasNoWO) {
-        needsWOData.push({
-          'EA Number': eaNumber,
-          'Asset NO': row['ASSET NO'] || '',
-          'YEAR': row['YEAR'] || '',
-          'MODEL': row['MODEL'] || '',
+      if (hasEA && hasNoWO && recallNumber) {
+        if (!needsWOGroups.has(recallNumber)) {
+          needsWOGroups.set(recallNumber, []);
+        }
+        needsWOGroups.get(recallNumber).push({
+          'Ford Recall Number': recallNumber,
+          'ASSET NO': row['ASSET NO'] || '',
+          'VIN': row['VIN'] || '',
           'STATION': row['STATION'] || '',
-          'VIN': row['VIN'] || ''
+          'Total': 1
         });
       }
     }
     
-    // Sort by EA Number, then by Asset NO
-    needsWOData.sort((a, b) => {
-      const eaCompare = (a['EA Number'] || '').localeCompare(b['EA Number'] || '');
-      if (eaCompare !== 0) return eaCompare;
-      return (a['Asset NO'] || '').localeCompare(b['Asset NO'] || '');
-    });
+    // Build grouped data with subtotals
+    const needsWOData = [];
+    const sortedWORecallNumbers = Array.from(needsWOGroups.keys()).sort();
+    let woGrandTotal = 0;
+    
+    for (const recallNumber of sortedWORecallNumbers) {
+      const vehicles = needsWOGroups.get(recallNumber);
+      
+      // Add vehicle rows for this recall number
+      for (const vehicle of vehicles) {
+        needsWOData.push(vehicle);
+      }
+      
+      // Add subtotal row for this recall number
+      const groupTotal = vehicles.length;
+      woGrandTotal += groupTotal;
+      needsWOData.push({
+        'Ford Recall Number': `${recallNumber} Total`,
+        'ASSET NO': '',
+        'VIN': '',
+        'STATION': '',
+        'Total': groupTotal
+      });
+    }
+    
+    // Add grand total row
+    if (needsWOData.length > 0) {
+      needsWOData.push({
+        'Ford Recall Number': 'Grand Total',
+        'ASSET NO': '',
+        'VIN': '',
+        'STATION': '',
+        'Total': woGrandTotal
+      });
+    }
     
     let needsWOWorksheet;
     if (needsWOData.length > 0) {
       needsWOWorksheet = XLSX.utils.json_to_sheet(needsWOData);
       needsWOWorksheet['!cols'] = [
-        { wch: 25 }, // EA Number
-        { wch: 18 }, // Asset NO
-        { wch: 8 },  // YEAR
-        { wch: 15 }, // MODEL
+        { wch: 25 }, // Ford Recall Number
+        { wch: 18 }, // ASSET NO
+        { wch: 20 }, // VIN
         { wch: 20 }, // STATION
-        { wch: 20 }  // VIN
+        { wch: 10 }  // Total
       ];
+      
+      // Set up row grouping/outlining
+      if (!needsWOWorksheet['!rows']) {
+        needsWOWorksheet['!rows'] = [];
+      }
+      
+      // Initialize header row
+      needsWOWorksheet['!rows'][0] = { level: 0, hidden: false };
+      
+      // Track groups and set outline levels
+      let currentWORecallNumber = null;
+      let woGroupStartRow = null;
+      const woRowGroups = [];
+      let woDataRowIndex = 1; // Start after header
+      
+      for (let i = 0; i < needsWOData.length; i++) {
+        const row = needsWOData[i];
+        const recallNumber = row['Ford Recall Number'];
+        const isTotalRow = recallNumber.includes('Total');
+        
+        if (isTotalRow && recallNumber !== 'Grand Total') {
+          // This is a subtotal row - end of a group
+          if (currentWORecallNumber !== null && woGroupStartRow !== null) {
+            woRowGroups.push({
+              startRow: woGroupStartRow,
+              endRow: woDataRowIndex,
+              recallNumber: currentWORecallNumber
+            });
+          }
+          // Subtotal row is at level 1
+          if (!needsWOWorksheet['!rows'][woDataRowIndex]) {
+            needsWOWorksheet['!rows'][woDataRowIndex] = {};
+          }
+          needsWOWorksheet['!rows'][woDataRowIndex].level = 1;
+          needsWOWorksheet['!rows'][woDataRowIndex].hidden = false;
+          woDataRowIndex++;
+          currentWORecallNumber = null;
+          woGroupStartRow = null;
+        } else if (recallNumber === 'Grand Total') {
+          // Grand total row
+          if (!needsWOWorksheet['!rows'][woDataRowIndex]) {
+            needsWOWorksheet['!rows'][woDataRowIndex] = {};
+          }
+          needsWOWorksheet['!rows'][woDataRowIndex].level = 0;
+          needsWOWorksheet['!rows'][woDataRowIndex].hidden = false;
+          woDataRowIndex++;
+        } else {
+          // Regular data row
+          if (recallNumber !== currentWORecallNumber) {
+            // New group starting
+            if (currentWORecallNumber !== null && woGroupStartRow !== null) {
+              woRowGroups.push({
+                startRow: woGroupStartRow,
+                endRow: woDataRowIndex,
+                recallNumber: currentWORecallNumber
+              });
+            }
+            currentWORecallNumber = recallNumber;
+            woGroupStartRow = woDataRowIndex;
+          }
+          // Data rows are at level 2
+          if (!needsWOWorksheet['!rows'][woDataRowIndex]) {
+            needsWOWorksheet['!rows'][woDataRowIndex] = {};
+          }
+          needsWOWorksheet['!rows'][woDataRowIndex].level = 2;
+          needsWOWorksheet['!rows'][woDataRowIndex].hidden = true; // Hidden by default
+          woDataRowIndex++;
+        }
+      }
+      
+      // Configure outline settings
+      needsWOWorksheet['!outline'] = {
+        above: false,
+        below: true,
+        left: false,
+        right: false,
+        summaryBelow: true,
+        summaryRight: false
+      };
     } else {
       // Create empty worksheet with headers
       needsWOWorksheet = XLSX.utils.json_to_sheet([{
-        'EA Number': '',
-        'Asset NO': '',
-        'YEAR': '',
-        'MODEL': '',
+        'Ford Recall Number': '',
+        'ASSET NO': '',
+        'VIN': '',
         'STATION': '',
-        'VIN': ''
+        'Total': ''
       }]);
       needsWOWorksheet['!cols'] = [
-        { wch: 25 }, // EA Number
-        { wch: 18 }, // Asset NO
-        { wch: 8 },  // YEAR
-        { wch: 15 }, // MODEL
+        { wch: 25 }, // Ford Recall Number
+        { wch: 18 }, // ASSET NO
+        { wch: 20 }, // VIN
         { wch: 20 }, // STATION
-        { wch: 20 }  // VIN
+        { wch: 10 }  // Total
       ];
     }
 
     // Add all worksheets to workbook
     XLSX.utils.book_append_sheet(workbook, groupedWorksheet, 'Grouped by Recall');
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Recall Data');
-    XLSX.utils.book_append_sheet(workbook, needsEAWorksheet, 'Needs EA');
+    XLSX.utils.book_append_sheet(workbook, needsEARecallsWorksheet, 'Needs EA (Recalls)');
+    XLSX.utils.book_append_sheet(workbook, needsEASatisfactionWorksheet, 'Needs EA (Satisfaction)');
     XLSX.utils.book_append_sheet(workbook, needsWOWorksheet, 'Needs WO');
 
     // Write file
@@ -1697,8 +1936,9 @@ async function createOutputExcel(scrapedData, outputPath) {
     console.log(`📁 Output Excel file created: ${outputPath}`);
     console.log(`   - Sheet 1: "Grouped by Recall" (Ford Recall Number first, grouped by recall)`);
     console.log(`   - Sheet 2: "Recall Data" (original format)`);
-    console.log(`   - Sheet 3: "Needs EA" (${needsEAData.length} recall/satisfaction numbers without EA)`);
-    console.log(`   - Sheet 4: "Needs WO" (${needsWOData.length} vehicles with EA but no Work Order)`);
+    console.log(`   - Sheet 3: "Needs EA (Recalls)" (${needsEARecalls.count} recall numbers, ${needsEARecalls.total} total vehicles without EA)`);
+    console.log(`   - Sheet 4: "Needs EA (Satisfaction)" (${needsEASatisfaction.count} satisfaction numbers, ${needsEASatisfaction.total} total vehicles without EA)`);
+    console.log(`   - Sheet 5: "Needs WO" (${needsWOGroups.size} recall/satisfaction numbers, ${woGrandTotal} total vehicles with EA but no Work Order)`);
     
   } catch (error) {
     console.error('Error creating output Excel file:', error);
