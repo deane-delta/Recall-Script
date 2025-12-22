@@ -400,6 +400,7 @@ async function processExcelFile(filePath, fileName, vinColumn = 'auto', sessionI
     // Extract VIN numbers based on column selection
     const vinNumbers = [];
     const vinMap = new Map(); // Track VINs with their dates for duplicate handling
+    const invalidVINs = []; // Track rows with invalid VINs (less than 10 characters or invalid format)
     
     // Helper function to parse date from "DATETIME OPEN" column (format: M/D/YYYY, e.g., "4/29/2021")
     const parseDate = (dateValue) => {
@@ -481,6 +482,30 @@ async function processExcelFile(filePath, fileName, vinColumn = 'auto', sessionI
               foundKey = key;
               break;
             } else if (value) {
+              // Check if this is an invalid VIN (less than 10 characters or has some value)
+              // Store it for the Invalid VINs sheet
+              if (value.length > 0 && value.length < 10) {
+                invalidVINs.push({
+                  ...row,
+                  'Invalid VIN Value': value,
+                  'VIN Column': key,
+                  'Reason': `VIN is only ${value.length} characters (must be at least 10)`
+                });
+              } else if (value.length >= 10 && value.length !== 17) {
+                invalidVINs.push({
+                  ...row,
+                  'Invalid VIN Value': value,
+                  'VIN Column': key,
+                  'Reason': `VIN is ${value.length} characters (must be exactly 17)`
+                });
+              } else if (value.length === 17 && !/^[A-HJ-NPR-Z0-9]{17}$/.test(value)) {
+                invalidVINs.push({
+                  ...row,
+                  'Invalid VIN Value': value,
+                  'VIN Column': key,
+                  'Reason': 'VIN contains invalid characters'
+                });
+              }
               // Log skipped value that's not a valid VIN
               console.log(`Skipping non-VIN value in "${key}" column: "${value}" (length: ${value.length})`);
             }
@@ -489,14 +514,45 @@ async function processExcelFile(filePath, fileName, vinColumn = 'auto', sessionI
         
         // If no VIN found, try to find any column that looks like a VIN (17 characters)
         if (!vin) {
+          let foundAnyValue = false;
           for (const [key, value] of Object.entries(row)) {
             if (value) {
+              foundAnyValue = true;
               const strValue = value.toString().trim();
               if (strValue.length === 17 && /^[A-HJ-NPR-Z0-9]{17}$/.test(strValue)) {
                 vin = strValue;
                 foundKey = key;
                 break;
+              } else if (strValue.length > 0 && strValue.length < 10) {
+                // Potential invalid VIN - check if we haven't already added this row
+                const alreadyAdded = invalidVINs.some(inv => {
+                  // Check if this row is already in invalidVINs by comparing key fields
+                  return Object.keys(row).some(k => row[k] === inv[k]);
+                });
+                if (!alreadyAdded) {
+                  invalidVINs.push({
+                    ...row,
+                    'Invalid VIN Value': strValue,
+                    'VIN Column': key,
+                    'Reason': `VIN is only ${strValue.length} characters (must be at least 10)`
+                  });
+                }
               }
+            }
+          }
+          // If no VIN value found in any column, add row as invalid
+          if (!vin && foundAnyValue) {
+            // Check if we haven't already added this row
+            const alreadyAdded = invalidVINs.some(inv => {
+              return Object.keys(row).some(k => row[k] === inv[k]);
+            });
+            if (!alreadyAdded) {
+              invalidVINs.push({
+                ...row,
+                'Invalid VIN Value': '',
+                'VIN Column': 'Not found',
+                'Reason': 'No VIN value found in any column'
+              });
             }
           }
         }
@@ -554,8 +610,32 @@ async function processExcelFile(filePath, fileName, vinColumn = 'auto', sessionI
         console.log(`Looking for VINs in column ${vinColumn} (${columnKey})`);
         
         data.forEach(row => {
-          if (row[columnKey]) {
-            const vin = row[columnKey].toString().trim();
+          const vinValue = row[columnKey];
+          if (vinValue) {
+            const vin = vinValue.toString().trim();
+            // Check for invalid VINs first
+            if (vin.length > 0 && vin.length < 10) {
+              invalidVINs.push({
+                ...row,
+                'Invalid VIN Value': vin,
+                'VIN Column': columnKey,
+                'Reason': `VIN is only ${vin.length} characters (must be at least 10)`
+              });
+            } else if (vin.length >= 10 && vin.length !== 17) {
+              invalidVINs.push({
+                ...row,
+                'Invalid VIN Value': vin,
+                'VIN Column': columnKey,
+                'Reason': `VIN is ${vin.length} characters (must be exactly 17)`
+              });
+            } else if (vin.length === 17 && !/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) {
+              invalidVINs.push({
+                ...row,
+                'Invalid VIN Value': vin,
+                'VIN Column': columnKey,
+                'Reason': 'VIN contains invalid characters'
+              });
+            }
             // Validate VIN format (exactly 17 characters matching VIN pattern)
             if (vin.length === 17 && /^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) {
               // Get date from "DATETIME OPEN" column
@@ -594,6 +674,14 @@ async function processExcelFile(filePath, fileName, vinColumn = 'auto', sessionI
               // Log skipped value that's not a valid VIN
               console.log(`Skipping non-VIN value in column ${vinColumn} (${columnKey}): "${vin}" (length: ${vin.length})`);
             }
+          } else {
+            // VIN column is empty or missing - add to invalid VINs
+            invalidVINs.push({
+              ...row,
+              'Invalid VIN Value': '',
+              'VIN Column': columnKey,
+              'Reason': 'VIN column is empty or missing'
+            });
           }
         });
         
@@ -610,6 +698,9 @@ async function processExcelFile(filePath, fileName, vinColumn = 'auto', sessionI
     }
 
     console.log(`Found ${vinNumbers.length} VIN numbers in ${fileName}`);
+    if (invalidVINs.length > 0) {
+      console.log(`⚠️ Found ${invalidVINs.length} rows with invalid VIN values (will be added to "Invalid VINs" sheet)`);
+    }
     
     // Determine which column was actually used for detection
     let detectedColumn = 'auto';
@@ -710,7 +801,7 @@ async function processExcelFile(filePath, fileName, vinColumn = 'auto', sessionI
     const outputFileName = `recall_data_${Date.now()}.xlsx`;
     const outputPath = path.join(__dirname, 'downloads', outputFileName);
     
-    await createOutputExcel(scrapedDataWithRows, outputPath);
+    await createOutputExcel(scrapedDataWithRows, outputPath, invalidVINs);
     
     // Clean up old files, keeping only the 5 most recent
     cleanupOldFiles(5);
@@ -1107,7 +1198,7 @@ async function scrapeVinData(vinNumbers, sessionId = null) {
 }
 
 // Function to create output Excel file
-async function createOutputExcel(scrapedData, outputPath) {
+async function createOutputExcel(scrapedData, outputPath, invalidVINs = []) {
   try {
     const workbook = XLSX.utils.book_new();
     
@@ -1918,12 +2009,120 @@ async function createOutputExcel(scrapedData, outputPath) {
       ];
     }
 
+    // SHEET 6: Invalid VINs - Rows with invalid VIN values
+    // Helper function to safely get column value with fallback variations (same as used in Recall Data)
+    const getColumnValueForInvalid = (row, primaryKey, ...alternateKeys) => {
+      if (!row) return '';
+      
+      // Normalize function to trim and uppercase for comparison
+      const normalize = (str) => str ? str.toString().trim().toUpperCase().replace(/\s+/g, ' ') : '';
+      
+      const normalizedPrimary = normalize(primaryKey);
+      const normalizedAlternates = alternateKeys.map(k => normalize(k));
+      
+      // Try primary key first (exact match)
+      if (row[primaryKey]) return row[primaryKey];
+      
+      // Try alternate keys (exact match)
+      for (const key of alternateKeys) {
+        if (row[key]) return row[key];
+      }
+      
+      // Try case-insensitive and whitespace-tolerant match
+      for (const [key, value] of Object.entries(row)) {
+        const normalizedKey = normalize(key);
+        
+        // Check against primary key
+        if (normalizedKey === normalizedPrimary) {
+          return value;
+        }
+        
+        // Check against alternate keys
+        for (const normalizedAlt of normalizedAlternates) {
+          if (normalizedKey === normalizedAlt) {
+            return value;
+          }
+        }
+      }
+      
+      return '';
+    };
+    
+    // Build Invalid VINs data with only the specified columns
+    const invalidVINsData = invalidVINs.map(row => {
+      // Extract the metadata columns first
+      const invalidVINValue = row['Invalid VIN Value'] || '';
+      const reason = row['Reason'] || '';
+      
+      // Create a copy of the row without the metadata columns for getColumnValueForInvalid
+      const originalRow = { ...row };
+      delete originalRow['Invalid VIN Value'];
+      delete originalRow['VIN Column'];
+      delete originalRow['Reason'];
+      
+      return {
+        'ASSET NO': getColumnValueForInvalid(originalRow, 'ASSET NO', 'EQ EQUIP NO', 'EQ EQUIPMENT NO', 'EQUIPMENT NO', 'EQUIP NO'),
+        'YEAR': getColumnValueForInvalid(originalRow, 'YEAR'),
+        'MODEL': getColumnValueForInvalid(originalRow, 'MODEL'),
+        'MANUFACTURER': getColumnValueForInvalid(originalRow, 'MANUFACTURER', 'MAKE'),
+        'STATION': getColumnValueForInvalid(originalRow, 'STATION', 'LOC ASSIGN PM LOC', 'LOC', 'PM LOC', 'LOCATION'),
+        'VIN': invalidVINValue, // Use the invalid VIN value
+        'Work Order': getColumnValueForInvalid(originalRow, 'Work Order', 'WORK ORDER', 'WO', 'WORK ORDER NO', 'WORK ORDER NUMBER', 'WO NUMBER', 'WorkOrder', 'WORKORDER'),
+        'WORK ORDER STATUS': (() => {
+          const status = getColumnValueForInvalid(originalRow, 'WORK ORDER STATUS', 'WO STATUS', 'WO Status', 'Work Order Status', 'WORK ORDER STAT', 'WO STAT', 'WorkOrderStatus', 'WORKORDERSTATUS', 'WOStatus', 'WOSTATUS');
+          return status && status.toString().trim() !== '' ? status : 'NONE';
+        })(),
+        'Reason': reason
+      };
+    });
+    
+    let invalidVINsWorksheet;
+    if (invalidVINsData.length > 0) {
+      invalidVINsWorksheet = XLSX.utils.json_to_sheet(invalidVINsData);
+      invalidVINsWorksheet['!cols'] = [
+        { wch: 18 }, // ASSET NO
+        { wch: 8 },  // YEAR
+        { wch: 15 }, // MODEL
+        { wch: 15 }, // MANUFACTURER
+        { wch: 20 }, // STATION
+        { wch: 20 }, // VIN
+        { wch: 18 }, // Work Order
+        { wch: 20 }, // WORK ORDER STATUS
+        { wch: 40 }  // Reason
+      ];
+    } else {
+      // Create empty worksheet with headers
+      invalidVINsWorksheet = XLSX.utils.json_to_sheet([{
+        'ASSET NO': '',
+        'YEAR': '',
+        'MODEL': '',
+        'MANUFACTURER': '',
+        'STATION': '',
+        'VIN': '',
+        'Work Order': '',
+        'WORK ORDER STATUS': '',
+        'Reason': ''
+      }]);
+      invalidVINsWorksheet['!cols'] = [
+        { wch: 18 }, // ASSET NO
+        { wch: 8 },  // YEAR
+        { wch: 15 }, // MODEL
+        { wch: 15 }, // MANUFACTURER
+        { wch: 20 }, // STATION
+        { wch: 20 }, // VIN
+        { wch: 18 }, // Work Order
+        { wch: 20 }, // WORK ORDER STATUS
+        { wch: 40 }  // Reason
+      ];
+    }
+
     // Add all worksheets to workbook
     XLSX.utils.book_append_sheet(workbook, groupedWorksheet, 'Grouped by Recall');
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Recall Data');
     XLSX.utils.book_append_sheet(workbook, needsEARecallsWorksheet, 'Needs EA (Recalls)');
     XLSX.utils.book_append_sheet(workbook, needsEASatisfactionWorksheet, 'Needs EA (Satisfaction)');
     XLSX.utils.book_append_sheet(workbook, needsWOWorksheet, 'Needs WO');
+    XLSX.utils.book_append_sheet(workbook, invalidVINsWorksheet, 'Invalid VINs');
 
     // Write file
     XLSX.writeFile(workbook, outputPath);
@@ -1939,6 +2138,7 @@ async function createOutputExcel(scrapedData, outputPath) {
     console.log(`   - Sheet 3: "Needs EA (Recalls)" (${needsEARecalls.count} recall numbers, ${needsEARecalls.total} total vehicles without EA)`);
     console.log(`   - Sheet 4: "Needs EA (Satisfaction)" (${needsEASatisfaction.count} satisfaction numbers, ${needsEASatisfaction.total} total vehicles without EA)`);
     console.log(`   - Sheet 5: "Needs WO" (${needsWOGroups.size} recall/satisfaction numbers, ${woGrandTotal} total vehicles with EA but no Work Order)`);
+    console.log(`   - Sheet 6: "Invalid VINs" (${invalidVINs.length} rows with invalid VIN values)`);
     
   } catch (error) {
     console.error('Error creating output Excel file:', error);
