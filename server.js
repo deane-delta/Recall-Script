@@ -1848,9 +1848,11 @@ async function createOutputExcel(scrapedData, outputPath, invalidVINs = []) {
       const hasEA = eaNumber && 
                     eaNumber.toString().trim() !== '' && 
                     eaNumber.toString().trim().toUpperCase() !== 'NONE';
+      const workOrderStr = workOrder ? workOrder.toString().trim() : '';
       const hasNoWO = !workOrder || 
-                       workOrder.toString().trim() === '' || 
-                       workOrder.toString().trim().toUpperCase() === 'NONE';
+                       workOrderStr === '' || 
+                       workOrderStr.toUpperCase() === 'NONE' ||
+                       workOrderStr === '--';
       
       if (hasEA && hasNoWO && recallNumber) {
         if (!needsWOGroups.has(recallNumber)) {
